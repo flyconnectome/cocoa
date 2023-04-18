@@ -1,2 +1,6 @@
-# cocoa ![cocoa](docs/_static/cocoa.svg)
-*Co*mparative *Co*nnectomics *A*nalyses for Python
+![cocoa](docs/_static/cocoa.svg)
+
+A Python library for comparative connectomics analyses.
+
+`cocoa` implements various dataset-agnostic as well as dataset-specific methods
+for matching, co-clustering and cell typing.
