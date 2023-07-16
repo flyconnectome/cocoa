@@ -1,11 +1,131 @@
 import clio
+import requests
 
+import datetime as dt
 import seaserpent as ss
 import neuprint as neu
 import numpy as np
+import pandas as pd
 
+from urllib.parse import urlparse
 from functools import lru_cache
 from fafbseg import flywire
+from pathlib import Path
+
+
+CACHE_DIR = "~/.cocoa/cache/"
+FLYWIRE_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file1_annotations.tsv"
+HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file4_hemibrain_meta.csv"
+ANNOT_REPO_URL = "https://api.github.com/repos/flyconnectome/flywire_annotations"
+
+
+def download_cache_file(url, force_reload="auto", verbose=True):
+    """Load file from URL and cache locally.
+
+    Parameters
+    ----------
+    url :           str
+                    URL to file.
+    force_reload :  bool
+                    If True, will force downloading file again even if it
+                    already exists locally.
+    verbose :       bool
+
+    Returns
+    -------
+    path :          pathlib.Path
+                    Path to the locally stored file.
+
+    """
+    if not isinstance(url, str):
+        raise TypeError(f"Expected `url` of type str, got {type(url)}")
+
+    # Make sure the cache dir exists
+    cache_dir = Path(CACHE_DIR).expanduser().absolute()
+    if not cache_dir.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    fp = cache_dir / Path(url).name
+
+    if not fp.exists() or force_reload:
+        if verbose:
+            print(
+                f"Caching {fp.name} from {urlparse(url).netloc}... ", end="", flush=True
+            )
+        r = requests.get(url, allow_redirects=True)
+        r.raise_for_status()
+        content_type = r.headers.get("content-type", "").lower()
+        is_text = "text" in content_type or "html" in content_type
+        with open(fp, mode="w" if is_text else "w") as f:
+            f.write(r.content.decode())
+        if verbose:
+            print("Done.")
+    return fp
+
+
+@lru_cache
+def _load_static_flywire_annotations(mat=None, force_reload=False):
+    """Download and cache FlyWire annotations from Github repo."""
+    print(
+        f"Caching FlyWire annotations for mat '{mat}'... ",
+        end="",
+        flush=True,
+    )
+    fp = Path(CACHE_DIR).expanduser().absolute() / Path(FLYWIRE_ANNOT_URL).name
+
+    # If file already exists, check if we need to refresh the cache
+    if fp.exists():
+        r = requests.get(ANNOT_REPO_URL)
+        try:
+            r.raise_for_status()
+        except BaseException:
+            print("Failed to check annotation repo for updates")
+        # Last time anything was committed to the repo
+        last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
+        # Last time the local file was modified
+        last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
+        if last_mod < last_upd:
+            force_reload = True
+
+    fp = download_cache_file(
+        FLYWIRE_ANNOT_URL, force_reload=force_reload, verbose=False
+    )
+    table = pd.read_csv(fp, sep="\t", low_memory=False)
+
+    if mat not in ("630", 630, None):
+        if mat in ("live", "current"):
+            timestamp = None
+        else:
+            timestamp = f"mat_{mat}"
+        table["root_id"] = flywire.supervoxels_to_roots(
+            table.supervoxel_id, timestamp=timestamp, progress=False
+        )
+    print("Done.")
+    return table
+
+
+@lru_cache
+def _load_live_flywire_annotations(mat=None):
+    """Load live FlyWire annotations from SeaTable."""
+    print(
+        f"Caching live FlyWire annotations for mat '{mat}'... ",
+        end="",
+        flush=True,
+    )
+
+    cols = ["root_id", "supervoxel_id", "cell_type", "hemibrain_type", "side"]
+    info = _get_table(which="info")
+    optic = _get_table(which="optic")
+    table = pd.concat((info[cols], optic[cols]), axis=0)
+
+    if mat not in ("live", "current", None):
+        timestamp = f"mat_{mat}"
+        table["root_id"] = flywire.supervoxels_to_roots(
+            table.supervoxel_id, timestamp=timestamp, progress=False
+        )
+    print("Done.")
+
+    return table
 
 
 @lru_cache
@@ -20,10 +140,60 @@ def _get_table(which="info"):
 
 
 @lru_cache
-def _get_hemibrain_meta():
-    return ss.Table("hb_info", "hemibrain")[
+def _load_static_hemibrain_annotations(force_reload=False):
+    """Download and cache hemibrain annotations from Github repo."""
+    print(
+        "Caching hemibrain annotations... ",
+        end="",
+        flush=True,
+    )
+    fp = Path(CACHE_DIR).expanduser().absolute() / Path(HEMIBRAIN_ANNOT_URL).name
+
+    # If file already exists, check if we need to refresh the cache
+    if fp.exists():
+        r = requests.get(ANNOT_REPO_URL)
+        try:
+            r.raise_for_status()
+        except BaseException:
+            print("Failed to check annotation repo for updates")
+        # Last time anything was committed to the repo
+        last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
+        # Last time the local file was modified
+        last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
+        if last_mod < last_upd:
+            force_reload = True
+
+    fp = download_cache_file(
+        HEMIBRAIN_ANNOT_URL, force_reload=force_reload, verbose=False
+    )
+    table = pd.read_csv(fp)
+    print("Done.")
+    return table
+
+
+@lru_cache
+def _load_live_hemibrain_annotations():
+    """Load live hemibrain annotations from SeaTable."""
+    print(
+        "Caching live hemibrain annotations... ",
+        end="",
+        flush=True,
+    )
+
+    table = ss.Table("hb_info", "hemibrain")[
         ["bodyId", "side", "type", "morphology_type"]
     ]
+    print("Done.")
+
+    return table
+
+
+@lru_cache
+def _get_hemibrain_meta(live=False):
+    if live:
+        return _load_live_hemibrain_annotations()
+    else:
+        return _load_static_hemibrain_annotations()
 
 
 @lru_cache
@@ -36,6 +206,7 @@ def _get_mcns_meta():
 def _get_neuprint_client():
     return neu.Client("https://neuprint.janelia.org", dataset="hemibrain:v1.2.1")
 
+
 @lru_cache
 def _get_neuprint_mcns_client():
     return neu.Client("https://neuprint-cns.janelia.org", dataset="cns")
@@ -47,29 +218,23 @@ def _get_clio_client(dataset):
 
 
 @lru_cache
-def _get_flywire_types(mat, add_side=False):
+def _get_fw_types(mat, add_side=False, live=False):
     """Fetch types from `info`.
 
     - cached
-    - uses `hemibrain_type` first and then falls back to `cell_type`
+    - uses `cell_type` first and then falls back to `hemibrain_type`
     - maps to given materialization version
 
     """
-    print(f"Caching FlyWire `type` annotations for mat {mat}... ", end="", flush=True)
-    if mat != "live":
-        timestamp = f"mat_{mat}"
-    else:
-        timestamp = None
-    table = _get_table(which="info")
-    has_hb_type = table.hemibrain_type.notnull() & table.hemibrain_type_source.notnull()
-    has_cell_type = table.cell_type.notnull()
     cols = ["supervoxel_id", "hemibrain_type", "cell_type"]
     if add_side:
         cols += ["side"]
-    typed = table.loc[has_hb_type | has_cell_type, cols]
-    typed[f"root_{mat}"] = flywire.supervoxels_to_roots(
-        typed.supervoxel_id.values, timestamp=timestamp, progress=False
-    )
+
+    if not live:
+        table = _load_static_flywire_annotations(mat=mat)
+    else:
+        table = _load_live_flywire_annotations(mat=mat)
+    typed = table[table.hemibrain_type.notnull() | table.cell_type.notnull()]
 
     if add_side:
         has_ct = typed.cell_type.notnull()
@@ -86,22 +251,21 @@ def _get_flywire_types(mat, add_side=False):
         ]
 
     type_dict = (
-        typed[typed.cell_type.notnull()].set_index(f"root_{mat}").cell_type.to_dict()
-    )
-    type_dict.update(
         typed[typed.hemibrain_type.notnull()]
-        .set_index(f"root_{mat}")
+        .set_index("root_id")
         .hemibrain_type.to_dict()
     )
-    print("Done!")
+    type_dict.update(
+        typed[typed.cell_type.notnull()].set_index("root_id").cell_type.to_dict()
+    )
     return type_dict
 
 
 @lru_cache
-def _get_hemibrain_types(add_side=False, use_morphology_type=False):
+def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
     """Fetch hemibrain types from flytable."""
     print("Caching hemibrain `type` annotations... ", end="", flush=True)
-    meta = _get_hemibrain_meta()
+    meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
 
     # Overwrite cell type
@@ -114,7 +278,7 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False):
 
     if add_side:
         meta["type"] = [f"{t}_{s}" for t, s in zip(meta.type.values, meta.side.values)]
-    print("Done!")
+    print("Done.")
     return meta.set_index("bodyId").type.to_dict()
 
 
@@ -131,45 +295,32 @@ def _get_mcns_types(add_side=False):
         meta["type"] = [
             f"{t}_{s}" for t, s in zip(meta.type.values, meta.soma_side.values)
         ]
-    print("Done!")
+    print("Done.")
     return meta.set_index("bodyid").type.to_dict()
 
 
 @lru_cache
-def _get_fw_sides(mat):
-    """Fetch sides from `info`.
-
-    - cached
-    - maps to given materialization version
-
-    """
-    print(f"Caching FlyWire `side` annotations for mat {mat}... ", end="", flush=True)
-    if mat != "live":
-        timestamp = f"mat_{mat}"
+def _get_fw_sides(mat, live=False):
+    """Fetch side annotations for Flywire."""
+    if not live:
+        sides = _load_static_flywire_annotations(mat=mat)
     else:
-        timestamp = None
-    table = _get_table(which="info")
-    cols = ["supervoxel_id", "side"]
+        sides = _load_live_flywire_annotations(mat=mat)
 
-    sides = table[cols]
-    sides[f"root_{mat}"] = flywire.supervoxels_to_roots(
-        sides.supervoxel_id.values, progress=False, timestamp=timestamp
-    )
-    print("Done!")
-    return sides.set_index(f"root_{mat}").side.to_dict()
+    return sides.set_index("root_id").side.to_dict()
 
 
 @lru_cache
-def _get_hb_sides():
+def _get_hb_sides(live=False):
     """Fetch hemibrain sides from flytable."""
     print("Caching hemibrain `side` annotations... ", end="", flush=True)
-    meta = _get_hemibrain_meta()
+    meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
 
-    print("Done!")
+    print("Done.")
     return meta.set_index("bodyId").side.to_dict()
 
 
@@ -276,10 +427,10 @@ def _add_types(
     return edges
 
 
-def _collapse_connectivity_types(type_dict):
+def _collapse_connectivity_types(type_dict, live=False):
     """Remove connectivity type suffixes from {ID: type} dictionary."""
     type_dict = type_dict.copy()
-    hb_meta = _get_hemibrain_meta()
+    hb_meta = _get_hemibrain_meta(live=live)
     cn2morph = hb_meta.set_index("type").morphology_type.to_dict()
     for k, v in type_dict.items():
         new_v = ",".join([cn2morph.get(t, t) for t in v.split(",")])
@@ -287,9 +438,9 @@ def _collapse_connectivity_types(type_dict):
     return type_dict
 
 
-def _morphology_to_connectivity_types(x):
+def _morphology_to_connectivity_types(x, live=False):
     """Translate morphology to connectivity types."""
-    hb_meta = _get_hemibrain_meta().drop_duplicates("type")
+    hb_meta = _get_hemibrain_meta(live=live).drop_duplicates("type")
     morph2cn = (
         hb_meta[hb_meta.morphology_type.notnull()]
         .groupby("morphology_type")

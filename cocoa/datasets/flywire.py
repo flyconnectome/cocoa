@@ -9,9 +9,11 @@ from .core import DataSet
 from .utils import (
     _add_types,
     _get_table,
-    _get_flywire_types,
+    _get_fw_types,
+    _load_live_flywire_annotations,
+    _load_static_flywire_annotations,
     _get_fw_sides,
-    _is_int
+    _is_int,
 )
 
 __all__ = ["FlyWire"]
@@ -23,22 +25,37 @@ otable = None
 class FlyWire(DataSet):
     """FlyWire dataset.
 
+    Uses type annotations from Schlegel et al., bioRxiv (2023).
+
     Parameters
     ----------
     label :         str
-                    A label.
+                    A label used for reporting, plotting, etc.
     up/downstream : bool
                     Whether to use up- and/or downstream connectivity.
     use_types :     bool
-                    Whether to group by type. This will use `hemibrain_type` first
-                    and where that doesn't exist fall back to `cell_type`.
+                    Whether to group by type. This will use `cell_type` first
+                    and where that doesn't exist fall back to `hemibrain_type`.
     use_side  :     bool | 'relative'
                     Only relevant if `group_by_type=True`:
                         - if `True`, will split cell types into left/right/center
                         - if `relative`, will label cell types as `ipsi` or
                         `contra` depending on the side of the connected neuron
-    file :          str, optional
-                    Filepath to one of the connectivity dumps.
+    exclude_queries :  bool
+                    If True (default), will exclude connections between query
+                    neurons from the connectivity vector.
+    cn_file :       str, optional
+                    Filepath to one of the connectivity dumps. Using this is
+                    faster than querying the CAVE backend for connectivity.
+    live_annot :    bool
+                    By False (default), will download (and cache) annotations
+                    from the Schlegel et al. data repo at
+                    https://github.com/flyconnectome/flywire_annotations. If
+                    True, will pull from a table where we stage annotations
+                    - for internal use only.
+    materialization : int | "live"
+                    Which materialization to use. If `cn_file` is provided,
+                    must match that materialization version.
 
     """
 
@@ -49,18 +66,32 @@ class FlyWire(DataSet):
         downstream=True,
         use_types=True,
         use_sides=False,
-        file=None,
+        exclude_queries=True,
+        cn_file=None,
+        live_annot=False,
+        materialization=630,
     ):
         assert use_sides in (True, False, "relative")
-        if file:
-            assert os.path.isfile(file)
-
         super().__init__(label=label)
-        self.file = file
+        self.cn_file = cn_file
         self.upstream = upstream
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
+        self.exclude_queries = exclude_queries
+        self.live_annot = live_annot
+        self.materialization = materialization
+
+        if self.cn_file:
+            if not os.path.isfile(self.cn_file):
+                raise ValueError(f'"{self.cn_file}" is not a valid file')
+            file_mat = int(self.cn_file.split("_")[-1].split(".")[0])
+            if file_mat != self.materialization:
+                raise ValueError(
+                    "Connectivity file name suggests it is from "
+                    f"materialization {file_mat} but dataset was "
+                    "initialized with `materialization={self.materialization}`"
+                )
 
     def _add_neurons(self, x, exact=True, left=True, right=True):
         """Turn `x` into FlyWire root IDs."""
@@ -79,71 +110,74 @@ class FlyWire(DataSet):
         elif _is_int(x):
             ids = [int(x)]
         else:
-            info = _get_table(which="info")
-            if exact:
-                filt = (info.cell_type == x) | (info.hemibrain_type == x)
+            if self.live_annot:
+                annot = _load_live_flywire_annotations(mat=self.materialization)
             else:
-                filt = info.cell_type.str.contains(
-                    x, na=False
-                ) | info.hemibrain_type.str.contains(x, na=False)
-
-            if not left:
-                filt = filt & (info.side != "left")
-            if not right:
-                filt = filt & (info.side != "right")
-
-            ids = info.loc[filt, "root_id"].values.astype(np.int64).tolist()
-
-            optic = _get_table(which="optic")
+                annot = _load_static_flywire_annotations(mat=self.materialization)
             if exact:
-                filt = (optic.cell_type == x) | (optic.hemibrain_type == x)
+                filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
             else:
-                filt = optic.cell_type.str.contains(
+                filt = annot.cell_type.str.contains(
                     x, na=False
-                ) | optic.hemibrain_type.str.contains(x, na=False)
-
-            if not left:
-                filt = filt & (optic.side != "left")
-            if not right:
-                filt = filt & (optic.side != "right")
-
-            ids += optic.loc[filt, "root_id"].values.astype(np.int64).tolist()
+                ) | annot.hemibrain_type.str.contains(x, na=False)
+            ids = annot.loc[filt, "root_id"].unique().astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))
 
-    def get_labels(self, x):
+    def get_labels(self, x, verbose=False):
         """Fetch labels for given IDs."""
         if not isinstance(x, (list, np.ndarray)):
             x = []
         x = np.asarray(x).astype(np.int64)
 
-        # Find a matching materialization version
-        mat = flywire.utils.find_mat_version(x)
-
-        # Fetch all types for this version
-        types = _get_flywire_types(mat, add_side=False)
+        types = _get_fw_types(live=self.live_annot, mat=self.materialization)
 
         return np.array([types.get(i, i) for i in x])
+
+    def get_ngl_scene(self, flat=False, open=False):
+        """Return a minimal neuroglancer scene for this dataset.
+
+        Parameters
+        ----------
+        flat :      bool
+                    If True will use the flat 630 segmentation instead of the
+                    production dataset.
+        open
+        """
+        if not flat:
+            return copy.deepcopy(FLYWIRE_MINIMAL_SCENE)
+        else:
+            return copy.deepcopy(FLYWIRE_FLAT_MINIMAL_SCENE)
+
+    def label_exists(self, x):
+        """Check if labels exists in dataset."""
+        x = np.asarray(x)
+
+        types = _get_fw_types(live=self.live_annot, mat=self.materialization)
+
+        all_types = np.unique(list(types.values()))
+        all_types = np.append(
+            all_types, np.unique([l for t in all_types for l in t.split(",")])
+        )
+
+        return np.isin(x, list(all_types))
 
     def compile(self):
         """Compile edges."""
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(int)
 
+        mat = self.materialization
+        il = flywire.is_latest_root(x, timestamp=f"mat_{mat}")
+        if any(~il):
+            raise ValueError(
+                "Some of the root IDs did not exist at the specified "
+                f"materialization ({mat}): {x[~il]}"
+            )
+
         us, ds = None, None
-        if self.file:
-            # Extract mat version from filename e.g. "syn_proof_[...]_587.feather"
-            us_mat = ds_mat = int(self.file.split("_")[-1].split(".")[0])
-
-            # Check if root IDs existed at the time of the synapse dump
-            il = flywire.is_latest_root(x, timestamp=f"mat_{us_mat}")
-            if any(~il):
-                raise ValueError(
-                    "Some root IDs did not exist at the time of the "
-                    f"synapse dump (mat {us_mat}): {x[~il]}"
-                )
-
-            cn = pd.read_feather(self.file).rename(
+        if self.cn_file:
+            cn = pd.read_feather(self.cn_file).rename(
                 {
                     "pre_pt_root_id": "pre",
                     "post_pt_root_id": "post",
@@ -161,35 +195,55 @@ class FlyWire(DataSet):
         else:
             if self.upstream:
                 us = flywire.fetch_connectivity(
-                    x, upstream=True, downstream=False, proofread_only=True
+                    x,
+                    upstream=True,
+                    downstream=False,
+                    proofread_only=True,
+                    filtered=True,
+                    min_score=50,
+                    progress=False,
+                    mat=mat,
                 )
-                us_mat = us.attrs["materialization"]
             if self.downstream:
                 ds = flywire.fetch_connectivity(
-                    x, upstream=False, downstream=True, proofread_only=True
+                    x,
+                    upstream=False,
+                    downstream=True,
+                    proofread_only=True,
+                    filtered=True,
+                    min_score=50,
+                    progress=False,
+                    mat=mat,
                 )
-                ds_mat = ds.attrs["materialization"]
 
-        # For grouping by type simple replace pre and post IDs with their types
+        if self.exclude_queries:
+            if self.upstream:
+                us = us[~us.pre.isin(x)]
+            if self.downstream:
+                ds = ds[~ds.pre.isin(x)]
+
+        # For grouping by type simply replace pre and post IDs with their types
         # -> well aggregate later
         if self.use_types:
+            fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+            fw_sides = _get_fw_sides(mat, live=self.live_annot)
             if self.upstream:
                 us = _add_types(
                     us,
-                    types=_get_flywire_types(us_mat, add_side=False),
+                    types=fw_types,
                     col="pre",
                     expand_morphology_types=True,
-                    sides=None if not self.use_sides else _get_fw_sides(us_mat),
+                    sides=None if not self.use_sides else fw_sides,
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
             if self.downstream:
                 ds = _add_types(
                     ds,
-                    types=_get_flywire_types(ds_mat, add_side=False),
+                    types=fw_types,
                     col="post",
                     expand_morphology_types=True,
-                    sides=None if not self.use_sides else _get_fw_sides(ds_mat),
+                    sides=None if not self.use_sides else fw_sides,
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -213,3 +267,5 @@ class FlyWire(DataSet):
         # self.connectivity_.columns = _morphology_to_connectivity_types(
         #    self.connectivity_.columns
         # )
+
+        return self

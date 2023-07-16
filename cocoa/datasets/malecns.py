@@ -24,7 +24,7 @@ class MaleCNS(DataSet):
     Parameters
     ----------
     label :         str
-                    A label.
+                    A label used for reporting, plotting, etc.
     up/downstream : bool
                     Whether to use up- and/or downstream connectivity.
     use_types :     bool

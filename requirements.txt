@@ -6,3 +6,4 @@ sea-serpent
 seaborn
 matplotlib
 fafbseg
+requests
