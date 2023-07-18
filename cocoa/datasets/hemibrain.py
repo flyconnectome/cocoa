@@ -3,6 +3,7 @@ import pandas as pd
 import neuprint as neu
 
 from .core import DataSet
+from .scenes import HEMIBRAIN_MINIMAL_SCENE
 from .utils import (
     _get_hemibrain_meta,
     _get_neuprint_client,

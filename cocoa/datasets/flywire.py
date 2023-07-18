@@ -1,4 +1,5 @@
 import os
+import copy
 
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ import pandas as pd
 from fafbseg import flywire
 
 from .core import DataSet
+from .scenes import FLYWIRE_MINIMAL_SCENE, FLYWIRE_FLAT_MINIMAL_SCENE
 from .utils import (
     _add_types,
     _get_table,
@@ -93,7 +95,7 @@ class FlyWire(DataSet):
                     "initialized with `materialization={self.materialization}`"
                 )
 
-    def _add_neurons(self, x, exact=True, left=True, right=True):
+    def _add_neurons(self, x, exact=True, sides=None):
         """Turn `x` into FlyWire root IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
@@ -105,7 +107,7 @@ class FlyWire(DataSet):
             ids = np.array([], dtype=np.int64)
             for t in x:
                 ids = np.append(
-                    ids, self._add_neurons(t, exact=exact, left=left, right=right)
+                    ids, self._add_neurons(t, exact=exact, sides=sides)
                 )
         elif _is_int(x):
             ids = [int(x)]
@@ -120,6 +122,10 @@ class FlyWire(DataSet):
                 filt = annot.cell_type.str.contains(
                     x, na=False
                 ) | annot.hemibrain_type.str.contains(x, na=False)
+            if isinstance(sides, str):
+                filt = filt & (annot.side == sides)
+            elif isinstance(sides, (tuple, list, np.ndarray)):
+                filt = filt & annot.side.isin(sides)
             ids = annot.loc[filt, "root_id"].unique().astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))

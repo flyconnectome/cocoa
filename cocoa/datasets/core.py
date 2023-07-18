@@ -46,6 +46,7 @@ class DataSet(ABC):
         self.neurons = np.unique(
             np.append(self.neurons, self._add_neurons(x, **kwargs))
         )
+        return self
 
     @abstractmethod
     def _add_neurons(self, x, **kwargs):

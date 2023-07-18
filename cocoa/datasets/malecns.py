@@ -1,8 +1,11 @@
+import copy
+
 import numpy as np
 import pandas as pd
 import neuprint as neu
 
 from .core import DataSet
+from .scenes import MCNS_MINIMAL_SCENE
 from .utils import (
     _get_mcns_meta,
     _get_neuprint_mcns_client,
@@ -10,6 +13,7 @@ from .utils import (
     _get_mcns_types,
     _get_hb_sides,
     _add_types,
+    _get_clio_client,
 )
 
 __all__ = ["MaleCNS"]
@@ -34,6 +38,9 @@ class MaleCNS(DataSet):
                         - if `True`, will split cell types into left/right/center
                         - if `relative`, will label cell types as `ipsi` or
                         `contra` depending on the side of the connected neuron
+    exclude_queries :  bool
+                    If True (default), will exclude connections between query
+                    neurons from the connectivity vector.
 
     """
 
@@ -44,6 +51,7 @@ class MaleCNS(DataSet):
         downstream=True,
         use_types=True,
         use_sides=False,
+        exclude_queries=True,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
@@ -51,6 +59,7 @@ class MaleCNS(DataSet):
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
+        self.exclude_queries=exclude_queries
 
     def _add_neurons(self, x, exact=False, right_only=False):
         """Turn `x` into male CNS body IDs."""
@@ -76,9 +85,7 @@ class MaleCNS(DataSet):
                     "bodyid",
                 ].values.astype(np.int64)
             else:
-                ids = meta.loc[
-                    (meta.type == x), "bodyid"
-                ].values.astype(np.int64)
+                ids = meta.loc[(meta.type == x), "bodyid"].values.astype(np.int64)
 
         return np.unique(np.array(ids, dtype=np.int64))
 
@@ -92,6 +99,35 @@ class MaleCNS(DataSet):
         types = _get_mcns_types(add_side=False)
 
         return np.array([types.get(i, i) for i in x])
+
+    def get_ngl_scene(self, in_flywire_space=False):
+        client = _get_clio_client("CNS")
+        seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
+        if not in_flywire_space:
+            scene = copy.deepcopy(client.meta["neuroglancer"])
+            scene.layers.append(
+                {
+                    "source": {
+                        "url": seg_source,
+                        "subsources": {"default": True, "meshes": True},
+                    },
+                    "name": client.meta["tag"],
+                }
+            )
+
+        else:
+            scene = copy.deepcopy(MCNS_MINIMAL_SCENE)
+            scene["layers"][0]["source"] = seg_source
+        return scene
+
+    def label_exists(self, x):
+        """Check if labels exists in dataset."""
+        x = np.asarray(x)
+
+        types = _get_mcns_types(add_side=False)
+        all_types = np.unique(list(types.values()))
+
+        return np.isin(x, list(all_types))
 
     def compile(self):
         """Compile connectivity vector."""
@@ -113,10 +149,12 @@ class MaleCNS(DataSet):
 
         # Fetch hemibrain vectors
         if self.upstream:
-            print('Fetching upstream connectivity... ', end='', flush=True)
+            print("Fetching upstream connectivity... ", end="", flush=True)
             _, us = neu.fetch_adjacencies(
                 targets=neu.NeuronCriteria(bodyId=x), client=client
             )
+            if self.exclude_queries:
+                us = us[~us.bodyId_pre.isin(x)]
             us.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
@@ -128,13 +166,15 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            print('Done!')
+            print("Done!")
 
         if self.downstream:
-            print('Fetching downstream connectivity... ', end='', flush=True)
+            print("Fetching downstream connectivity... ", end="", flush=True)
             _, ds = neu.fetch_adjacencies(
                 sources=neu.NeuronCriteria(bodyId=x), client=client
             )
+            if self.exclude_queries:
+                ds = ds[~ds.bodyId_pre.isin(x)]
             ds.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
@@ -146,7 +186,7 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            print('Done!')
+            print("Done!")
 
         if self.upstream and self.downstream:
             self.edges_ = pd.concat(
@@ -162,6 +202,8 @@ class MaleCNS(DataSet):
             self.edges_ = ds.groupby(["pre", "post"]).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        return self
 
 
 def _collapse_connectivity_types(type_dict):
