@@ -42,7 +42,7 @@ class FlyWire(DataSet):
                     Only relevant if `group_by_type=True`:
                         - if `True`, will split cell types into left/right/center
                         - if `relative`, will label cell types as `ipsi` or
-                        `contra` depending on the side of the connected neuron
+                          `contra` depending on the side of the connected neuron
     exclude_queries :  bool
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
@@ -50,11 +50,12 @@ class FlyWire(DataSet):
                     Filepath to one of the connectivity dumps. Using this is
                     faster than querying the CAVE backend for connectivity.
     live_annot :    bool
-                    By False (default), will download (and cache) annotations
+                    If False (default), will download (and cache) annotations
                     from the Schlegel et al. data repo at
                     https://github.com/flyconnectome/flywire_annotations. If
                     True, will pull from a table where we stage annotations
-                    - for internal use only.
+                    - this requires special permissions and is for internal use
+                    only.
     materialization : int | "live"
                     Which materialization to use. If `cn_file` is provided,
                     must match that materialization version.
@@ -92,7 +93,7 @@ class FlyWire(DataSet):
                 raise ValueError(
                     "Connectivity file name suggests it is from "
                     f"materialization {file_mat} but dataset was "
-                    "initialized with `materialization={self.materialization}`"
+                    f"initialized with `materialization={self.materialization}`"
                 )
 
     def _add_neurons(self, x, exact=True, sides=None):
@@ -229,7 +230,7 @@ class FlyWire(DataSet):
                 ds = ds[~ds.pre.isin(x)]
 
         # For grouping by type simply replace pre and post IDs with their types
-        # -> well aggregate later
+        # -> we'll aggregate later
         if self.use_types:
             fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
             fw_sides = _get_fw_sides(mat, live=self.live_annot)

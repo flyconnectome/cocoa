@@ -70,7 +70,7 @@ For graph matching use `co.GraphMatcher([])`
 __all__ = ["Clustering"]
 
 
-CLUSTER_DEFAULTS = dict(method="ward")
+CLUSTER_DEFAULTS = dict(method="ward", optimal_ordering=True)
 
 
 class Clustering:
@@ -103,7 +103,9 @@ class Clustering:
             if len(ds.neurons) == 0:
                 raise ValueError(f"Dataset {ds.label} ({ds.type}) has no neurons.")
             if ds.label in [d.label for d in self.datasets]:
-                raise ValueError(f"Clustering already contains a dataset with label '{ds.label}'.")
+                raise ValueError(
+                    f"Clustering already contains a dataset with label '{ds.label}'."
+                )
             self._datasets.append(ds)
 
         return self
@@ -172,6 +174,7 @@ class Clustering:
         metric="cosine",
         force_recompile=False,
         exclude_labels=None,
+        augment=None,
         verbose=True,
     ):
         """Compile combined connectivity vector and calculate distance matrix.
@@ -186,14 +189,18 @@ class Clustering:
                       - "inner" will get the intersection of all labels across
                         the connectivity vectors
                       - "outer" will use all available labels
+        metric :    "cosine" | "Euclidean"
+                    Metric to use for distance calculations.
         exclude_labels : str | list of str, optional
                     If provided will exclude given labels from the observation
                     vector. This uses regex!
-        metric :    "cosine" | "Euclidean"
-                    Metric to use for distance calculations.
         force_recompile : bool
                     If True, will recompile connectivity vectors for each data
                     set even if they already exist.
+        augment :   DataFrame, optional
+                    An second distance matrix (e.g. from NBLAST) that will be
+                    used to augment the connectivity-based scores. Index and
+                    columns must contain all the IDs in this clustering.
 
         Returns
         -------
@@ -205,6 +212,9 @@ class Clustering:
 
         assert metric in ("cosine", "Euclidean")
         assert join in ("inner", "outer", "existing")
+
+        if not isinstance(augment, (pd.DataFrame, type(None))):
+            raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
@@ -334,7 +344,7 @@ class Clustering:
         )
 
         if metric == "Euclidean":
-            dists = squareform(pdist(self.vect_))
+            dists = squareform(pdist(self.vect_, checks=False))
         elif metric == "cosine":
             # Turn cosine similarity into distance and round to make sure we
             # have zeros in the diagonal
@@ -347,57 +357,92 @@ class Clustering:
             columns=[f"{l}_{ds}" for l, ds in zip(labels, sources)],
         )
 
-        printv("Done", verbose=verbose)
+        if augment is not None:
+            miss = self.dists_.index[~np.isin(self.dists_.index, augment.index)]
+            if any(miss):
+                raise ValueError(
+                    f"{len(miss)} IDs are missing from the " "augmentation matrix."
+                )
+            if round(augment.values[0, 0], 2) != 0:
+                print(
+                    "Looks like the augmentation matrix contains similarities? "
+                    "Will invert those."
+                )
+                augment = 1 - augment
+            printv(
+                "Augmenting connectivity distances... ",
+                end="",
+                flush=True,
+                verbose=verbose,
+            )
+            self.dists_ = (
+                self.dists_ + augment.loc[self.dists_.index, self.dists_.index].values
+            ) / 2
+            printv("Done", verbose=verbose)
+
+        printv("All done.", verbose=verbose)
         return self
 
     @req_compile
-    def to_table(self, clusters=None, **kwargs):
+    def to_table(self, clusters=None, link_method='ward', pivot=False):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
         ----------
-        clusters :  iterable, optional
-                    Clusters as provided by `extract_clusters`. Must be
-                    membership, i.e. `[0, 0, 0, 1, 2, 1, 0, ...]`.
-        **kwargs
-                    Keyword arguments passed to `linkage()`.
+        clusters :    iterable, optional
+                      Clusters as provided by `extract_clusters`. Must be
+                      membership, i.e. `[0, 0, 0, 1, 2, 1, 0, ...]`.
+        link_method : str
+                      Linkage method for sorting neurons.
+        pivot :       bool
+                      If True, will pivot table such that each row represents
+                      a cluster. Ignored if ``clusters=None``.
 
         Returns
         -------
-        See `out` parameter.
+        DataFrame
 
         """
         # Turn similarity into distances
         x = self.dists_
         if x.values[0, 0] >= 0.999:
             x = 1 - x
-        defaults = CLUSTER_DEFAULTS.copy()
-        defaults.update(kwargs)
-        Z = linkage(squareform(self.dists_.values), **defaults)
+
+        # Generate linkage and extract order
+        Z = linkage(squareform(self.dists_.values, checks=False), method=link_method)
         leafs = leaves_list(Z)
 
+        # Generate table
         table = pd.DataFrame()
         table["id"] = self.dists_.index.values[leafs]
 
+        # Add labels
         labels = {}
         for ds in self.datasets:
             labels.update(dict(zip(ds.neurons, ds.get_labels(ds.neurons))))
-        table["label"] = self.dists_.index.map(labels)
+        table["label"] = table.id.map(labels)
+        # Neurons without an actual type will show up with their own ID as label
+        # Here we set these to None
+        table.loc[table.label == table.id.astype(str), 'label'] = None
 
+        # Add a column for the dataset
         ds = {i: ds.label for ds in self.datasets for i in ds.neurons}
         table["dataset"] = table.id.map(ds)
 
-        table['cn_frac_used'] = table.id.map(self.cn_frac_.to_dict())
+        # Add fraction of connectivity used
+        table["cn_frac_used"] = table.id.map(self.cn_frac_.to_dict())
 
+        # Order in the dendrogram
         table["dend_ix"] = table.index
 
+        # Last but not least: add clusters (if provided)
         if clusters is not None:
             table["cluster"] = clusters[leafs]
 
         return table
 
     @req_compile
-    def extract_clusters(self, N, out='ids', **kwargs):
+    def extract_clusters(self, N, out="ids", **kwargs):
         """Extract clusters.
 
         Parameters
@@ -423,7 +468,7 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = linkage(squareform(x.values), **defaults)
+        Z = linkage(squareform(x.values, checks=False), **defaults)
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -436,7 +481,15 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def extract_homogeneous_clusters(self, out="ids", eval_func=is_good, **kwargs):
+    def extract_homogeneous_clusters(
+        self,
+        out="ids",
+        eval_func=is_good,
+        max_dist=None,
+        min_dist=None,
+        link_method="ward",
+        verbose=False,
+    ):
         """Extract homogenous clusters from clustermap or distance matrix.
 
         Parameters
@@ -447,12 +500,16 @@ class Clustering:
                          - `membership` returns a cluster ID for each neuron
                          - `labels` returns lists of neuron labels
         eval_func :     callable
-                        Must accept a vector of label counts (e.g. `[1, 1, 2]`)
-                        and return True if that composition is acceptable and
+                        Must accept two positional arguments:
+                         1. A numpy array of label counts (e.g. `[1, 1, 2]`)
+                         2. An integer describing how many unique labels we expect
+                        Must return True if cluster composition is acceptable and
                         False if it isn't.
-
-        **kwargs
-                    Keyword arguments passed to `linkage()`.
+        min/max_dist :  float
+                        Use this to set a range of between-cluster distances at
+                        which we are allowed to make clusters.
+        link_method :   str
+                        Method to use for generating the linkage.
 
         Returns
         -------
@@ -464,7 +521,8 @@ class Clustering:
             print("Warning: it appears that dataset labels are not unique")
 
         cl = extract_homogeneous_clusters(
-            self.dists_, self.vect_sources_, eval_func=eval_func
+            self.dists_, self.vect_sources_, eval_func=eval_func, link_method=link_method,
+            max_dist=max_dist, min_dist=min_dist, verbose=verbose
         )
         if out == "membership":
             return cl
@@ -486,15 +544,25 @@ class Clustering:
 
         """
         dists = self.dists_
-        Z = linkage(squareform(dists.values), method="ward")
+        Z = linkage(squareform(dists.values, checks=False), **CLUSTER_DEFAULTS)
 
         row_colors = [_percent_to_color(v) for v in self.cn_frac_.values]
+
+        ds = {i: ds.label for ds in self.datasets for i in ds.neurons}
+        ds_cmap = dict(
+            zip(
+                [ds.label for ds in self.datasets],
+                sns.color_palette("muted", len(self.datasets)),
+            )
+        )
+        col_colors = [ds_cmap.get(ds.get(i), "k") for i in dists.index]
 
         cm = sns.clustermap(
             dists,
             cbar_pos=None,
             cmap="Greys_r",
             row_colors=row_colors,
+            col_colors=col_colors,
             row_linkage=Z,
             col_linkage=Z,
         )
@@ -571,7 +639,7 @@ class Clustering:
         return axes
 
     @req_compile
-    def interactive_dendrogram(self, method="ward", open=True, **kwargs):
+    def interactive_dendrogram(self, link_method="ward", open=True, **kwargs):
         """Make an interactive dendrogram using plotly dash.
 
         Parameters
@@ -586,7 +654,7 @@ class Clustering:
             labels=self.extract_homogeneous_clusters(out="membership"),
             symbols=self.vect_sources_,
             marks=self.dists_.index,
-            linkage_method=method,
+            linkage_method=link_method,
         )
 
         defaults = dict(debug=False, port="8051")

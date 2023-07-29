@@ -7,3 +7,5 @@ seaborn
 matplotlib
 fafbseg
 requests
+dash
+dash-bootstrap-components

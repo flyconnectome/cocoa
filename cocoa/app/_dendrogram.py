@@ -10,11 +10,10 @@ import scipy.cluster.hierarchy as sch
 import scipy.spatial.distance as ssd
 
 from dash import dcc, html
-from jupyter_dash import JupyterDash
 from dash.exceptions import PreventUpdate
 from dash.dependencies import Input, Output, State
 from plotly.figure_factory._dendrogram import _Dendrogram
-
+from dash import Dash
 from ftu import neuroglancer
 
 
@@ -34,7 +33,6 @@ def interactive_dendrogram(
     labels,
     linkage_method="ward",
     symbols=None,
-    embedded=False,
     marks=None,
 ):
     """Generate Dash app for exploring and editing labels on dendrograms.
@@ -43,12 +41,7 @@ def interactive_dendrogram(
     ----------
 
     """
-    if not embedded:
-        app = JupyterDash(__name__)
-    else:
-        from dash import Dash
-
-        app = Dash(__name__)
+    app = Dash(__name__)
 
     labels = np.asarray(labels).astype(str)
     if symbols is not None:
@@ -359,7 +352,7 @@ def create_dendrogram(Z, ids, clusters=None, marks=None, symbols=None, fig=None)
             None, linkage=Z, orientation="bottom", color_threshold=1.5
         )
 
-        # Move dendograms to other axes and add to figure
+        # Move dendograms to other axis and add to figure
         for i in range(len(dend["data"])):
             dend["data"][i]["xaxis"] = "x"
 
@@ -415,6 +408,7 @@ def _create_dendrogram(
     Function that returns a dendrogram Plotly figure object. This is a thin
     wrapper around scipy.cluster.hierarchy.dendrogram.
     See also https://dash.plot.ly/dash-bio/clustergram.
+
     :param (ndarray) X: (N, N) Matrix of pairwise distances
     :param (str) orientation: 'top', 'right', 'bottom', or 'left'
     :param (list) labels: List of axis category labels(observation labels)

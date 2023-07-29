@@ -40,11 +40,12 @@ class Hemibrain(DataSet):
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
     live_annot :    bool
-                    By False (default), will download (and cache) annotations
+                    If False (default), will download (and cache) annotations
                     from the Schlegel et al. data repo at
                     https://github.com/flyconnectome/flywire_annotations. If
                     True, will pull from a table where we stage annotations
-                    - for internal use only.
+                    - this requires special permissions and is for internal use
+                    only.
 
     """
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE

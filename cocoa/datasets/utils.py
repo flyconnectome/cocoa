@@ -90,15 +90,20 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
     fp = download_cache_file(
         FLYWIRE_ANNOT_URL, force_reload=force_reload, verbose=False
     )
-    table = pd.read_csv(fp, sep="\t", low_memory=False)
+    table = pd.read_csv(fp, sep="\t", low_memory=False).astype(
+        {"root_id": np.int64, "supervoxel_id": np.int64}
+    )
 
     if mat not in ("630", 630, None):
         if mat in ("live", "current"):
             timestamp = None
         else:
             timestamp = f"mat_{mat}"
-        table["root_id"] = flywire.supervoxels_to_roots(
-            table.supervoxel_id, timestamp=timestamp, progress=False
+        to_update = ~flywire.is_latest_root(
+            table.root_id, timestamp=timestamp, progress=False
+        )
+        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
+            table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
         )
     print("Done.")
     return table
@@ -116,12 +121,17 @@ def _load_live_flywire_annotations(mat=None):
     cols = ["root_id", "supervoxel_id", "cell_type", "hemibrain_type", "side"]
     info = _get_table(which="info")
     optic = _get_table(which="optic")
-    table = pd.concat((info[cols], optic[cols]), axis=0)
+    table = pd.concat((info[cols], optic[cols]), axis=0).astype(
+        {"root_id": np.int64, "supervoxel_id": np.int64}
+    )
 
     if mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
-        table["root_id"] = flywire.supervoxels_to_roots(
-            table.supervoxel_id, timestamp=timestamp, progress=False
+        to_update = ~flywire.is_latest_root(
+            table.root_id, timestamp=timestamp, progress=False
+        )
+        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
+            table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
         )
     print("Done.")
 
@@ -191,9 +201,10 @@ def _load_live_hemibrain_annotations():
 @lru_cache
 def _get_hemibrain_meta(live=False):
     if live:
-        return _load_live_hemibrain_annotations()
+        meta = _load_live_hemibrain_annotations()
     else:
-        return _load_static_hemibrain_annotations()
+        meta = _load_static_hemibrain_annotations()
+    return meta
 
 
 @lru_cache
@@ -264,7 +275,6 @@ def _get_fw_types(mat, add_side=False, live=False):
 @lru_cache
 def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
     """Fetch hemibrain types from flytable."""
-    print("Caching hemibrain `type` annotations... ", end="", flush=True)
     meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
 
@@ -278,7 +288,6 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
 
     if add_side:
         meta["type"] = [f"{t}_{s}" for t, s in zip(meta.type.values, meta.side.values)]
-    print("Done.")
     return meta.set_index("bodyId").type.to_dict()
 
 
@@ -313,14 +322,12 @@ def _get_fw_sides(mat, live=False):
 @lru_cache
 def _get_hb_sides(live=False):
     """Fetch hemibrain sides from flytable."""
-    print("Caching hemibrain `side` annotations... ", end="", flush=True)
     meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
 
-    print("Done.")
     return meta.set_index("bodyId").side.to_dict()
 
 

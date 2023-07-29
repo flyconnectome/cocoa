@@ -2,11 +2,12 @@ import networkx as nx
 import tanglegram as tg
 import numpy as np
 
+from functools import partial
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage
 
 
-__all__ = ['extract_homogeneous_clusters']
+__all__ = ["extract_homogeneous_clusters"]
 
 
 def is_good(v, n_unique_ds):
@@ -25,21 +26,34 @@ def is_good(v, n_unique_ds):
     return True
 
 
-def extract_homogeneous_clusters(dists, labels, eval_func=is_good, method="ward"):
+def extract_homogeneous_clusters(
+    dists,
+    labels,
+    eval_func=is_good,
+    max_dist=None,
+    min_dist=None,
+    link_method="ward",
+    verbose=False,
+):
     """Make clusters that contains representatives of each unique label.
 
     Parameters
     ----------
-    dists :     pd.DataFrame
-                Distances to cluster.
-    labels :    np.ndarray
-                Labels for each row in `dists`.
-    eval_func : callable
-                Must accept a vector of label counts (e.g. `[1, 1, 2]`) and
-                return True if that composition is acceptable and False if it
-                isn't.
-    method :    str
-                Method to use for generating the linkage.
+    dists :         pd.DataFrame
+                    Distances from which to find clusters.
+    labels :        np.ndarray
+                    Labels for each row in `dists`.
+    eval_func :     callable
+                    Must accept two positional arguments:
+                    1. A numpy array of label counts (e.g. `[1, 1, 2]`)
+                    2. An integer describing how many unique labels we expect
+                    Must return True if cluster composition is acceptable and
+                    False if it isn't.
+    min/max_dist :  float
+                    Use this to set a range of between-cluster distances at which
+                    we are allowed to make clusters.
+    link_method :   str
+                    Method to use for generating the linkage.
 
     Returns
     -------
@@ -50,7 +64,7 @@ def extract_homogeneous_clusters(dists, labels, eval_func=is_good, method="ward"
         dists = 1 - dists
 
     # Make linkage
-    Z = linkage(squareform(dists), method=method)
+    Z = linkage(squareform(dists, checks=False), method=link_method)
 
     # Turn linkage into graph
     G = tg.utils.linkage_to_graph(Z, labels=labels)
@@ -58,47 +72,100 @@ def extract_homogeneous_clusters(dists, labels, eval_func=is_good, method="ward"
     # Add origin as node attribute
     n_unique_ds = len(np.unique(labels))
 
-    # From the root of the tree, walk down to each leaf and then propagate the
-    # label counts back up
-    n = len(Z) + 1  # This is the number of leafs
-    root = len(G) - 1  # This is the index of the root
-    ds_counts = {}
-    paths = nx.shortest_path(G, source=root)  # Get all paths from a node to the root
-    for i in range(n):
-        ds = G.nodes[i]["label"]  # Get label of this leaf
-        for p in paths.get(i, [])[:-1]:  # Walk up towards the root
-            ds_counts[p] = ds_counts.get(p, {})  # Add counts
-            ds_counts[p][ds] = ds_counts[p].get(ds, 0) + 1
+    # Prepare eval function
+    def _eval_func(x):
+        return eval_func(x, n_unique_ds)
 
-    # For each leaf
-    keep = []
-    for i in range(n):
-        this_p = paths[i]
-        # Walk up the path towards root
-        for k in range(0, len(this_p)):
-            # If this hinge/node hasn't been visited, stop
-            if this_p[k] not in ds_counts:
-                break
-            # Get the dataset counts for this hinge
-            v = ds_counts[this_p[k]]
+    # Find clusters recursively
+    clusters = {}
+    label_dict = nx.get_node_attributes(G, "label")
+    _ = _find_clusters_rec(
+        G,
+        clusters=clusters,
+        eval_func=_eval_func,
+        label_dict=label_dict,
+        max_dist=max_dist,
+        min_dist=min_dist,
+        verbose=verbose,
+    )
 
-            # Check if this hinge still satisfies our requirements
-            if not eval_func(v, n_unique_ds):
-                break
+    # Keep only clusters labels for the leaf nodes
+    clusters = {k: v for k, v in clusters.items() if k in label_dict}
 
-        # Keep only the nodes that comply
-        keep += this_p[k - 1 :]
+    # Clusters are currently labels based at which hinge they were created
+    # We have to renumber them
+    reind = {c: i for i, c in enumerate(np.unique(list(clusters.values())))}
+    clusters = {k: reind[v] for k, v in clusters.items()}
 
-    # Make a subgraph
-    SG = G.subgraph(list(set(keep)))
+    return np.array([clusters[i] for i in np.arange(len(dists))])
 
-    # Get connected components
-    CC = list(nx.connected_components(SG.to_undirected()))
 
-    clusters = np.zeros(n, dtype=int)
-    for i, nodes in enumerate(CC):
-        for no in nodes:
-            if no < n:
-                clusters[no] = i
+def _find_clusters_rec(
+    G, clusters, eval_func, label_dict, max_dist=None, min_dist=None, verbose=False
+):
+    """Recursively find clusters."""
+    if G.is_directed:
+        G = G.to_undirected()
 
-    return clusters
+    # The root node should always be the last in the graph
+    root = max(G.nodes)
+
+    try:
+        dist = G.nodes[root]["distance"]  # the distance between the two prior clusters
+    except KeyError:
+        # If this is a leaf-node it won't have a "distance" property
+        dist = 0
+
+    # Remove the root in this graph
+    G2 = G.copy()
+    G2.remove_node(root)
+
+    # Split into the two connected components
+    CC = list(nx.connected_components(G2))
+    # Count the number of labels (i.e. datasets) present in each subgraph
+    counts = [_count_labels(c, label_dict=label_dict) for c in CC]
+    # Evaluate the counts
+    is_good = [eval_func(c) for c in counts]
+
+    # Check if we should stop here
+    stop = False
+    # If we are below the minimum distance we have to stop
+    if min_dist and (dist <= min_dist):
+        stop = True
+    # If the two clusters are bad...
+    elif not all(is_good):
+        # ... and the distance between the two clusters below is not too big
+        # we can stop
+        if max_dist and (dist <= max_dist):
+            stop = True
+        elif not max_dist:
+            stop = True
+
+    if not stop:
+        for c in CC:
+            _find_clusters_rec(
+                G.subgraph(c),
+                clusters=clusters,
+                eval_func=eval_func,
+                label_dict=label_dict,
+                max_dist=max_dist,
+                min_dist=min_dist,
+                verbose=verbose,
+            )
+    else:
+        if verbose:
+            print(
+                f"Found cluster of {sum([c.sum() for c in counts])} at distance {dist} ({root})"
+            )
+        clusters.update({n: root for n in G.nodes})
+
+    return
+
+
+def _count_labels(cluster, label_dict):
+    """Takes a list of node IDs and counts labels among those."""
+    cluster = list(cluster) if isinstance(cluster, set) else cluster
+    cluster = np.asarray(cluster)
+    cluster = cluster[np.isin(cluster, list(label_dict))]
+    _, cnt = np.unique([label_dict[n] for n in cluster], return_counts=True)
+    return cnt
