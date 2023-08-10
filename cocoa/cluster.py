@@ -653,7 +653,7 @@ class Clustering:
             self.dists_,
             labels=self.extract_homogeneous_clusters(out="membership"),
             symbols=self.vect_sources_,
-            marks=self.dists_.index,
+            marks=self.dists_.index.astype(str),
             linkage_method=link_method,
         )
 
