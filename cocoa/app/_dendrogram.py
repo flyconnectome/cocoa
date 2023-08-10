@@ -49,7 +49,7 @@ def interactive_dendrogram(
 
     if dists.shape[0] > 1:
         Z = sch.linkage(
-            ssd.squareform(dists.values), method=linkage_method, optimal_ordering=True
+            ssd.squareform(dists.values), method=linkage_method, optimal_ordering=False
         )
     else:
         Z = None
