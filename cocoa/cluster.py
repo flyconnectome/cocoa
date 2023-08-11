@@ -1,4 +1,3 @@
-import webbrowser
 import re
 
 import pandas as pd
@@ -8,9 +7,13 @@ import matplotlib.colors as mcl
 import matplotlib.pyplot as plt
 
 from tqdm.auto import tqdm
-from scipy.cluster.hierarchy import linkage, cut_tree, leaves_list
+# Fastcluster seems to be ~2X faster than scipy
+from fastcluster import linkage
+from scipy.cluster.hierarchy import cut_tree, leaves_list
 from scipy.spatial.distance import pdist, squareform
-from sklearn.metrics.pairwise import cosine_similarity
+from scipy.sparse import coo_array
+from sklearn.preprocessing import normalize
+from sklearn.utils.extmath import safe_sparse_dot
 
 from .datasets.core import DataSet
 from .cluster_utils import extract_homogeneous_clusters, is_good
@@ -71,6 +74,8 @@ __all__ = ["Clustering"]
 
 
 CLUSTER_DEFAULTS = dict(method="ward", optimal_ordering=True)
+DISTS_DTYPE = np.float32
+VECT_DTYPE = np.uint16
 
 
 class Clustering:
@@ -322,7 +327,7 @@ class Clustering:
             adjacencies.append(pd.concat((down, up.T), axis=1).fillna(0))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
-        self.vect_ = pd.concat(adjacencies, axis=0).astype(np.int32)
+        self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
         self.vect_sources_ = np.array(sources)
         self.vect_labels = np.array(labels)
 
@@ -343,12 +348,22 @@ class Clustering:
             verbose=verbose,
         )
 
+        printv(f"Calulating {metric} distances... ", verbose=verbose, end='', flush=True)
         if metric == "Euclidean":
-            dists = squareform(pdist(self.vect_, checks=False))
+            dists = squareform(pdist(self.vect_, checks=False)).astype(DISTS_DTYPE,
+                                                                       copy=False).round(6)
         elif metric == "cosine":
-            # Turn cosine similarity into distance and round to make sure we
-            # have zeros in the diagonal
-            dists = (1 - cosine_similarity(self.vect_)).round(6)
+            # Note that we're converting to sparse array here. That's because
+            # the vector (if it's large) is typically sparse (<1% filled)
+            # and cosine_similarity is much much faster on sparse arrays
+            dists = cosine_similarity(coo_array(self.vect_), dense_output=True)
+
+            # Turn into distance inplace
+            np.subtract(1, dists, out=dists)
+
+            # Make sure diagonal is actually zero
+            np.fill_diagonal(dists, 0)
+        printv("Done.", verbose=verbose)
 
         # Change columns to "type, ds" (index remains just "id")
         self.dists_ = pd.DataFrame(
@@ -366,7 +381,7 @@ class Clustering:
             if round(augment.values[0, 0], 2) != 0:
                 print(
                     "Looks like the augmentation matrix contains similarities? "
-                    "Will invert those."
+                    "Will invert those for you."
                 )
                 augment = 1 - augment
             printv(
@@ -384,7 +399,7 @@ class Clustering:
         return self
 
     @req_compile
-    def to_table(self, clusters=None, link_method='ward', pivot=False):
+    def to_table(self, clusters=None, link_method='ward', orient='neurons'):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
@@ -394,22 +409,29 @@ class Clustering:
                       membership, i.e. `[0, 0, 0, 1, 2, 1, 0, ...]`.
         link_method : str
                       Linkage method for sorting neurons.
-        pivot :       bool
-                      If True, will pivot table such that each row represents
-                      a cluster. Ignored if ``clusters=None``.
+        orient :      "neurons" | "clusters
+                      Determines output:
+                        - for "neurons" each row will be a neuron
+                        - for "clusters" each row will be a ``cluster``
 
         Returns
         -------
         DataFrame
 
         """
+        assert orient in ('neurons', 'clusters'), 'orient must be "clusters" or "neurons"'
+
+        if orient == 'clusters' and clusters is None:
+            raise ValueError('Must provide `clusters` when `orient="clusters"`')
+
         # Turn similarity into distances
         x = self.dists_
         if x.values[0, 0] >= 0.999:
             x = 1 - x
 
         # Generate linkage and extract order
-        Z = linkage(squareform(self.dists_.values, checks=False), method=link_method)
+        Z = linkage(squareform(self.dists_.values, checks=False),
+                    method=link_method, preserve_input=False)
         leafs = leaves_list(Z)
 
         # Generate table
@@ -437,6 +459,15 @@ class Clustering:
 
         # Last but not least: add clusters (if provided)
         if clusters is not None:
+            if not isinstance(clusters, (np.ndarray, list)):
+                raise TypeError('Expected `clusters` to be list or array, got '
+                                f'"{type(clusters)}".')
+            clusters = np.asarray(clusters)
+            if clusters.ndim != 1:
+                raise ValueError('`clusters` must be a flat list or array')
+            if len(clusters) != len(table):
+                raise ValueError(f'Got {len(clusters)} for {len(table)} rows')
+
             table["cluster"] = clusters[leafs]
 
         return table
@@ -468,7 +499,8 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = linkage(squareform(x.values, checks=False), **defaults)
+        Z = linkage(squareform(x.values, checks=False),
+                    preserve_input=False, **defaults)
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -487,6 +519,7 @@ class Clustering:
         eval_func=is_good,
         max_dist=None,
         min_dist=None,
+        min_dist_diff=None,
         link_method="ward",
         verbose=False,
     ):
@@ -522,7 +555,8 @@ class Clustering:
 
         cl = extract_homogeneous_clusters(
             self.dists_, self.vect_sources_, eval_func=eval_func, link_method=link_method,
-            max_dist=max_dist, min_dist=min_dist, verbose=verbose
+            max_dist=max_dist, min_dist=min_dist, min_dist_diff=min_dist_diff,
+            verbose=verbose
         )
         if out == "membership":
             return cl
@@ -544,7 +578,13 @@ class Clustering:
 
         """
         dists = self.dists_
-        Z = linkage(squareform(dists.values, checks=False), **CLUSTER_DEFAULTS)
+        Z = linkage(squareform(dists.values, checks=False),
+                    preserve_input=False, **CLUSTER_DEFAULTS)
+
+        # We seem to sometimes get negative cluster distances which dendrogram()
+        # does not like - perhaps something to do with neurons not having any
+        # shared connectivity? Anywho: let's set distances to zero
+        Z[Z[:, 2] < 0, 2] = 0
 
         row_colors = [_percent_to_color(v) for v in self.cn_frac_.values]
 
@@ -685,3 +725,26 @@ def printv(*args, verbose=True, **kwargs):
     """Thin wrapper around print function."""
     if verbose:
         print(*args, **kwargs)
+
+
+def cosine_similarity(X, dense_output=False, dtype=np.float32):
+    """Modified from sklearn.metrics.cosine_similarity to forgoe some
+    unnecessary tests and to allow casting the datatype going into the
+    dot product function.
+
+    Parameters
+    ----------
+    X : {array-like, sparse matrix} of shape (n_samples_X, n_features)
+        Input data.
+
+    Returns
+    -------
+    kernel matrix : ndarray of shape (n_samples_X, n_samples_Y)
+        Returns the cosine similarity between samples in X and Y.
+
+    """
+    X_normalized = normalize(X, copy=True).astype(dtype, copy=False)
+
+    K = safe_sparse_dot(X_normalized, X_normalized.T, dense_output=dense_output)
+
+    return K

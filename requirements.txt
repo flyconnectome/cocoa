@@ -9,3 +9,4 @@ fafbseg
 requests
 dash
 dash-bootstrap-components
+fastcluster

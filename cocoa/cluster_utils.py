@@ -32,6 +32,7 @@ def extract_homogeneous_clusters(
     eval_func=is_good,
     max_dist=None,
     min_dist=None,
+    min_dist_diff=None,
     link_method="ward",
     verbose=False,
 ):
@@ -45,13 +46,25 @@ def extract_homogeneous_clusters(
                     Labels for each row in `dists`.
     eval_func :     callable
                     Must accept two positional arguments:
-                    1. A numpy array of label counts (e.g. `[1, 1, 2]`)
-                    2. An integer describing how many unique labels we expect
+                     1. A numpy array of label counts (e.g. `[1, 1, 2]`)
+                     2. An integer describing how many unique labels we expect
                     Must return True if cluster composition is acceptable and
                     False if it isn't.
-    min/max_dist :  float
+    min/max_dist :  float, optional
                     Use this to set a range of between-cluster distances at which
-                    we are allowed to make clusters.
+                    we are allowed to make clusters. For example:
+                     - ``min_dist=.1`` means that we will not split further if
+                       a cluster is already more similar than .1
+                     - ``max_dist=1`` means that we will keep splitting clusters
+                       that are more dissimilar than 1 even if they don't fullfil
+                       the `eval_func`
+    min_dist_diff : float, optional
+                    Consider two homogenous clusters that are adjacent two each
+                    other in the dendrogram: if the difference in distance
+                    between the two clusters and their supercluster is smaller
+                    than `min_dist_diff` they will be merged. Or in other words:
+                    we will merge if the three horizontal lines in the dendrograms
+                    are closer together than `min_dist_diff`.
     link_method :   str
                     Method to use for generating the linkage.
 
@@ -97,7 +110,13 @@ def extract_homogeneous_clusters(
     reind = {c: i for i, c in enumerate(np.unique(list(clusters.values())))}
     clusters = {k: reind[v] for k, v in clusters.items()}
 
-    return np.array([clusters[i] for i in np.arange(len(dists))])
+    cl = np.array([clusters[i] for i in np.arange(len(dists))])
+
+    if min_dist_diff:
+        cl = _merge_similar_clusters(cl=cl, G=G, Z=G, dist_thresh=min_dist_diff,
+                                     verbose=verbose)
+
+    return cl
 
 
 def _find_clusters_rec(
@@ -169,3 +188,73 @@ def _count_labels(cluster, label_dict):
     cluster = cluster[np.isin(cluster, list(label_dict))]
     _, cnt = np.unique([label_dict[n] for n in cluster], return_counts=True)
     return cnt
+
+
+def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
+    """Merge similar clusters.
+
+    Parameters
+    ----------
+    cl :        np.ndarray
+                Clusters membership that is to be checked.
+    Z :         np.ndarray
+                Linkage.
+    G :         nx.DiGraph
+                Graph representing the linkage.
+    dist_thresh : float
+                Distance under which to merge clusters.
+
+    Returns
+    -------
+    cl :        np.ndarray
+                Fixed cluster membership.
+
+    """
+    ix = np.arange(len(cl))
+    to_merge = []
+    for c1 in np.unique(cl):
+        # Get the connected subgraph for this cluster
+        p = nx.shortest_path(G.to_undirected(), source=ix[cl == c1][0], target=None)
+        sg = [p[i] for i in ix[cl == c1][1:]]
+        sg = np.unique([i for l in sg for i in l])  # flatten
+
+        # The root for this cluster
+        root = max(sg)
+
+        dist_c1 = G.nodes[root].get("distance", 0)
+
+        # The cluster one above this one
+        try:
+            top = next(G.predecessors(root))
+        except StopIteration:
+            continue
+        except BaseException:
+            raise
+
+        # Distance between our original cluster and the closest
+        dist_top = G.nodes[top].get("distance", np.inf)
+
+        # Distance for the neighbouring cluster
+        other = [s for s in G.successors(top) if s not in sg][0]
+        dist_c2 = G.nodes[other].get("distance", 0)
+
+        # If merging this and the next cluster are very similar
+        th = 0.1
+        if (dist_top - dist_c1) <= th and (dist_top - dist_c2) < th:
+            # Get the index of the other cluster
+            sg_other = list(nx.dfs_postorder_nodes(G, other))
+            c2 = cl[[i for i in sg_other if i in ix]][0]
+
+            if verbose:
+                print(f"Merging {c1} and {c2} (top={dist_top}; left={dist_c1}, right={dist_c2}")
+
+            to_merge.append([c1, c2])
+
+    # Deduplicate
+    to_merge = list(set([tuple(sorted(p)) for p in to_merge]))
+
+    cl2 = cl.copy()
+    for p in to_merge:
+        cl2[cl2 == p[1]] = p[0]
+
+    return cl2
