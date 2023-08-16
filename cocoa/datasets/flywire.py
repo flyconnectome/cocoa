@@ -10,7 +10,6 @@ from .core import DataSet
 from .scenes import FLYWIRE_MINIMAL_SCENE, FLYWIRE_FLAT_MINIMAL_SCENE
 from .utils import (
     _add_types,
-    _get_table,
     _get_fw_types,
     _load_live_flywire_annotations,
     _load_static_flywire_annotations,
@@ -107,9 +106,7 @@ class FlyWire(DataSet):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(
-                    ids, self._add_neurons(t, exact=exact, sides=sides)
-                )
+                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
@@ -117,12 +114,22 @@ class FlyWire(DataSet):
                 annot = _load_live_flywire_annotations(mat=self.materialization)
             else:
                 annot = _load_static_flywire_annotations(mat=self.materialization)
-            if exact:
-                filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
+
+            if ":" not in x:
+                if exact:
+                    filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
+                else:
+                    filt = annot.cell_type.str.contains(
+                        x, na=False
+                    ) | annot.hemibrain_type.str.contains(x, na=False)
             else:
-                filt = annot.cell_type.str.contains(
-                    x, na=False
-                ) | annot.hemibrain_type.str.contains(x, na=False)
+                # If this is e.g. "cell_class:L1-5"
+                col, val = x.split(":")
+                if exact:
+                    filt = annot[col] == val
+                else:
+                    filt = annot[col].str.contains(val)
+
             if isinstance(sides, str):
                 filt = filt & (annot.side == sides)
             elif isinstance(sides, (tuple, list, np.ndarray)):

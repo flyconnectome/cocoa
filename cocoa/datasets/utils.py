@@ -118,12 +118,20 @@ def _load_live_flywire_annotations(mat=None):
         flush=True,
     )
 
-    cols = ["root_id", "supervoxel_id", "cell_type", "hemibrain_type", "side"]
+    cols = [
+        "root_id",
+        "supervoxel_id",
+        "cell_class",
+        "cell_type",
+        "hemibrain_type",
+        "side",
+    ]
     info = _get_table(which="info")
     optic = _get_table(which="optic")
-    table = pd.concat((info[cols], optic[cols]), axis=0).astype(
-        {"root_id": np.int64, "supervoxel_id": np.int64}
-    )
+    table = pd.concat(
+        (info.loc[info.flow.notnull(), cols], optic.loc[optic.flow.notnull(), cols]),
+        axis=0,
+    ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
 
     if mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
