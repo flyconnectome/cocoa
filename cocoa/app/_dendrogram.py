@@ -194,7 +194,7 @@ def interactive_dendrogram(
             body_ids=body_ids,
             body_groups=body_groups,
             body_colors=body_colors,
-            open_browser=True,
+            open=True,
         )
 
         return []
@@ -231,7 +231,7 @@ def interactive_dendrogram(
             body_ids=body_ids,
             body_groups=body_groups,
             body_colors=body_colors,
-            open_browser=True,
+            open=True,
         )
 
         return []
@@ -685,7 +685,7 @@ def encode_url(
         if isinstance(body_ids, (int, str)):
             body_ids = [int(body_ids)]
 
-        scene = neuroglancer.decode_url(neuroglancer.encode_url(short=False, neuroglancer='basic'), format='full')
+        scene = neuroglancer.decode_url(neuroglancer.encode_url(shorten=False, base_neuroglancer=True), format='full')
 
         scene["layout"] = "3d"
         scene["navigation"] = {
@@ -819,7 +819,7 @@ def encode_url(
     return neuroglancer.encode_url(
         segments=root_ids,
         scene=scene,
-        neuroglancer='basic',
-        short=False,
+        base_neuroglancer=True,
+        shorten=False,
         **kwargs,
     )
