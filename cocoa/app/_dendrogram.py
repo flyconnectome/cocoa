@@ -1,4 +1,6 @@
 import uuid
+import copy
+import navis
 
 import matplotlib.colors as mcl
 import numpy as np
@@ -14,7 +16,7 @@ from dash.exceptions import PreventUpdate
 from dash.dependencies import Input, Output, State
 from plotly.figure_factory._dendrogram import _Dendrogram
 from dash import Dash
-from ftu import neuroglancer
+from fafbseg.flywire import neuroglancer
 
 
 # Red (1) -> Green (5)
@@ -185,7 +187,7 @@ def interactive_dendrogram(
         seg_colors, body_colors = colors[is_fw], colors[~is_fw]
         seg_groups, body_groups = groups[is_fw], [f"hb{g}" for g in groups[~is_fw]]
 
-        neuroglancer.encode_url(
+        encode_url(
             root_ids=seg_ids,
             seg_colors=seg_colors,
             seg_groups=seg_groups,
@@ -222,7 +224,7 @@ def interactive_dendrogram(
             seg_colors, body_colors = None
             seg_groups, body_groups = None
 
-        neuroglancer.encode_url(
+        encode_url(
             root_ids=seg_ids,
             seg_colors=seg_colors,
             seg_groups=seg_groups,
@@ -630,3 +632,194 @@ def is_flywire_id(x):
     x = np.asarray(x).astype(int)
 
     return x > 1e10
+
+
+HB_MESH_LAYER = {
+    "type": "segmentation",
+    "mesh": "precomputed://https://spine.itanna.io/files/data/hemibrain2flywire/precomputed/neuronmeshes/mesh/",
+    "colorSeed": 3429908875,
+    "segments": [],
+    "skeletonRendering": {"mode2d": "lines_and_points", "mode3d": "lines"},
+    "name": "hemibrain_meshes",
+}
+
+HB_MESH_LAYER_MIRR = {
+    "type": "segmentation",
+    "mesh": "precomputed://https://spine.itanna.io/files/data/hemibrain2flywire_mirror/precomputed/neuronmeshes/mesh/",
+    "colorSeed": 3429908875,
+    "segments": [],
+    "skeletonRendering": {"mode2d": "lines_and_points", "mode3d": "lines"},
+    "name": "hemibrain_meshes",
+}
+
+
+def encode_url(
+    root_ids=None,
+    body_ids=None,
+    body_colors=None,
+    body_groups=None,
+    hb_mirrored=False,
+    **kwargs,
+):
+    """Encode data as FlyWire neuroglancer scene.
+
+    Parameters
+    ----------
+    root_ids :      int | list of int, optional
+                    FlyWire root IDs to have selected.
+    body_ids :      int | list of int, optional
+                    Hemibrain body IDs to have selected.
+    body_colors :   str | tuple | list | dict, optional
+                    Single color (name or RGB tuple), or list or dictionary
+                    mapping colors to ``segments``. Can also be a numpy array
+                    of labels which will be automatically turned into colors.
+    **kwargs
+                    Keyword arguments are passed through to `flywire.encode_url`.
+
+    Returns
+    -------
+    url :           str
+
+    """
+    if body_ids is not None:
+        if isinstance(body_ids, (int, str)):
+            body_ids = [int(body_ids)]
+
+        scene = neuroglancer.decode_url(neuroglancer.encode_url(short=False, neuroglancer='basic'), format='full')
+
+        scene["layout"] = "3d"
+        scene["navigation"] = {
+            "pose": {
+                "position": {
+                    "voxelSize": [4, 4, 40],
+                    "voxelCoordinates": [
+                        133186.171875,
+                        59157.77734375,
+                        4065.686279296875,
+                    ],
+                }
+            },
+            "zoomFactor": 2.8,
+        }
+
+        scene["layers"].append(copy.deepcopy(HB_MESH_LAYER))
+        scene["layers"][-1]["segments"] = [str(i) for i in body_ids]
+        seg_layer_ix = len(scene["layers"]) - 1
+
+        if hb_mirrored:
+            scene["layers"][-1]["mesh"] = scene["layers"][-1]["mesh"].replace(
+                "hemibrain2flywire", "hemibrain2flywire_mirror"
+            )
+
+        # See if we need to assign colors
+        if body_colors is not None:
+            if isinstance(body_colors, list):
+                body_colors = np.array(body_colors)
+
+            if isinstance(body_colors, str):
+                body_colors = {s: body_colors for s in body_ids}
+            elif isinstance(body_colors, tuple) and len(body_colors) == 3:
+                body_colors = {s: body_colors for s in body_ids}
+            elif (
+                isinstance(body_colors, (np.ndarray, pd.Series))
+                and body_colors.ndim == 1
+            ):
+                if len(body_colors) != len(body_ids):
+                    raise ValueError(
+                        f"Got {len(body_colors)} colors for {len(body_ids)} segments."
+                    )
+
+                uni_ = np.unique(body_colors)
+                if len(uni_) > 20:
+                    # Note the +1 to avoid starting and ending on the same color
+                    pal = sns.color_palette("hls", len(uni_) + 1)
+                    # Shuffle to avoid having two neighbouring clusters with
+                    # similar colours
+                    rng = np.random.default_rng(1985)
+                    rng.shuffle(pal)
+                elif len(uni_) > 10:
+                    pal = sns.color_palette("tab20", len(uni_))
+                else:
+                    pal = sns.color_palette("tab10", len(uni_))
+                _colors = dict(zip(uni_, pal))
+                body_colors = {s: _colors[l] for s, l in zip(body_ids, body_colors)}
+            elif not isinstance(body_colors, dict):
+                if not navis.utils.is_iterable(body_colors):
+                    raise TypeError(
+                        f'`body_colors` must be dict or iterable, got "{type(body_colors)}"'
+                    )
+                if len(body_colors) < len(body_ids):
+                    raise ValueError(
+                        f"Got {len(body_colors)} colors for {len(body_ids)} segments."
+                    )
+
+                # Turn into dictionary
+                body_colors = dict(zip(body_ids, body_colors))
+
+            # Turn colors into hex codes
+            # Also make sure keys are int (not np.int64)
+            # Not sure but this might cause issue on Windows systems
+            # But JSON doesn't like np.int64... so we're screwed
+            body_colors = {str(s): mcl.to_hex(c) for s, c in body_colors.items()}
+
+            # Assign colors
+            scene["layers"][-1]["segmentColors"] = body_colors
+
+        if body_groups is not None:
+            if not isinstance(body_groups, dict):
+                if not navis.utils.is_iterable(body_groups):
+                    raise TypeError(
+                        f'`body_groups` must be dict or iterable, got "{type(body_groups)}"'
+                    )
+                if len(body_groups) != len(body_ids):
+                    raise ValueError(
+                        f"Got {len(body_groups)} groups for {len(body_ids)} body IDs."
+                    )
+
+                body_groups = np.asarray(body_groups)
+
+                if body_groups.dtype != object:
+                    body_groups = [f"group_{i}" for i in body_groups]
+
+                # Turn into dictionary
+                body_groups = dict(zip(body_ids, body_groups))
+
+            # Check if dict is {id: group} or {group: [id1, id2, id3]}
+            is_list = [
+                isinstance(v, (list, tuple, set, np.ndarray))
+                for v in body_groups.values()
+            ]
+            if not any(is_list):
+                groups = {}
+                for s, g in body_groups.items():
+                    if not isinstance(g, str):
+                        raise TypeError(
+                            f"Expected body groups to be strings, got {type(g)}"
+                        )
+                    groups[g] = groups.get(g, []) + [s]
+            elif all(is_list):
+                groups = body_groups
+            else:
+                raise ValueError(
+                    "`body_groups` appears to be a mix of {id: group} "
+                    "and {group: [id1, id2, id3]}."
+                )
+
+            for g in groups:
+                scene["layers"].append(copy.deepcopy(scene["layers"][seg_layer_ix]))
+                scene["layers"][-1]["name"] = f"{g}"
+                scene["layers"][-1]["segments"] = [str(s) for s in groups[g]]
+                scene["layers"][-1]["visible"] = False
+                if body_colors is not None:
+                    scene["layers"][-1]["segmentColors"] = body_colors
+
+    else:
+        scene = None
+
+    return neuroglancer.encode_url(
+        segments=root_ids,
+        scene=scene,
+        neuroglancer='basic',
+        short=False,
+        **kwargs,
+    )
