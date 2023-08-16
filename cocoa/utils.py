@@ -6,6 +6,13 @@ import pandas as pd
 
 from collections.abc import Iterable
 
+
+def printv(*args, verbose=True, **kwargs):
+    """Thin wrapper around print function."""
+    if verbose:
+        print(*args, **kwargs)
+
+
 def check_frame(x, required_cols=None, dtypes=None):
     """Check dataframe."""
     if not isinstance(x, pd.DataFrame):
