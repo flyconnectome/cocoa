@@ -11,5 +11,5 @@ dash
 dash-bootstrap-components
 fastcluster
 neuprint-python
-git+https://github.com/schlegelp/tanglegram@master
-git+https://github.com/schlegelp/clio-py@main
+tanglegram @ git+https://github.com/schlegelp/tanglegram@master
+clio-py @ git+https://github.com/schlegelp/clio-py@main
