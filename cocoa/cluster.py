@@ -434,7 +434,7 @@ class Clustering:
         return table
 
     @req_compile
-    def extract_clusters(self, N, out="ids", **kwargs):
+    def extract_clusters(self, N, out="membership", **kwargs):
         """Extract clusters.
 
         Parameters
@@ -476,7 +476,7 @@ class Clustering:
     @req_compile
     def extract_homogeneous_clusters(
         self,
-        out="ids",
+        out="membership",
         eval_func=is_good,
         max_dist=None,
         min_dist=None,
