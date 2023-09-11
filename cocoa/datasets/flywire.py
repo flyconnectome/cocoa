@@ -1,9 +1,9 @@
-import os
 import copy
 
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
 from fafbseg import flywire
 
 from .core import DataSet
@@ -85,9 +85,10 @@ class FlyWire(DataSet):
         self.materialization = materialization
 
         if self.cn_file:
-            if not os.path.isfile(self.cn_file):
+            self.cn_file = Path(self.cn_file).expanduser()
+            if not self.cn_file.is_file():
                 raise ValueError(f'"{self.cn_file}" is not a valid file')
-            file_mat = int(self.cn_file.split("_")[-1].split(".")[0])
+            file_mat = int(str(self.cn_file).split("_")[-1].split(".")[0])
             if file_mat != self.materialization:
                 raise ValueError(
                     "Connectivity file name suggests it is from "
