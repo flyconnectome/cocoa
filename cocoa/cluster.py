@@ -74,7 +74,7 @@ For graph matching use `co.GraphMatcher([])`
 __all__ = ["Clustering"]
 
 
-CLUSTER_DEFAULTS = dict(method="ward", optimal_ordering=True)
+CLUSTER_DEFAULTS = dict(method="ward")
 DISTS_DTYPE = np.float32
 VECT_DTYPE = np.uint16
 
