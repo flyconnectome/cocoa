@@ -69,7 +69,7 @@ class Hemibrain(DataSet):
         self.exclude_queries = exclude_queries
         self.live_annot = live_annot
 
-    def _add_neurons(self, x, exact=False, left=False, right=True):
+    def _add_neurons(self, x, exact=False, sides=('left', 'right')):
         """Turn `x` into hemibrain body IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
@@ -81,7 +81,7 @@ class Hemibrain(DataSet):
             ids = np.array([], dtype=np.int64)
             for t in x:
                 ids = np.append(
-                    ids, self._add_neurons(t, exact=exact, left=left, right=right)
+                    ids, self._add_neurons(t, exact=exact, sides=sides)
                 )
         elif _is_int(x):
             ids = [int(x)]
@@ -95,10 +95,10 @@ class Hemibrain(DataSet):
                     x, na=False
                 ) | meta.morphology_type.str.contains(x, na=False)
 
-            if not left:
-                filt = filt & (meta.side != "left")
-            if not right:
-                filt = filt & (meta.side != "right")
+            if isinstance(sides, str):
+                filt = filt & (annot.side == sides)
+            elif isinstance(sides, (tuple, list, np.ndarray)):
+                filt = filt & annot.side.isin(sides)
 
             ids = meta.loc[filt, "bodyId"].values.astype(np.int64).tolist()
 
