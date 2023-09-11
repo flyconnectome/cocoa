@@ -86,21 +86,29 @@ class Hemibrain(DataSet):
         elif _is_int(x):
             ids = [int(x)]
         else:
-            meta = _get_hemibrain_meta(live=self.live_annot)
+            annot = _get_hemibrain_meta(live=self.live_annot)
 
-            if exact:
-                filt = (meta.type == x) | (meta.morphology_type == x)
+            if ":" not in x:
+                if exact:
+                    filt = (annot.type == x) | (annot.morphology_type == x)
+                else:
+                    filt = annot.type.str.contains(
+                        x, na=False
+                    ) | annot.morphology_type.str.contains(x, na=False)
             else:
-                filt = meta.type.str.contains(
-                    x, na=False
-                ) | meta.morphology_type.str.contains(x, na=False)
+                # If this is e.g. "type:L1-5"
+                col, val = x.split(":")
+                if exact:
+                    filt = annot[col] == val
+                else:
+                    filt = annot[col].str.contains(val, na=False)
 
             if isinstance(sides, str):
                 filt = filt & (annot.side == sides)
             elif isinstance(sides, (tuple, list, np.ndarray)):
                 filt = filt & annot.side.isin(sides)
 
-            ids = meta.loc[filt, "bodyId"].values.astype(np.int64).tolist()
+            ids = annot.loc[filt, "bodyId"].values.astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))
 
