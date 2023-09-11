@@ -121,9 +121,11 @@ def _load_live_flywire_annotations(mat=None):
     cols = [
         "root_id",
         "supervoxel_id",
+        "super_class",
         "cell_class",
         "cell_type",
         "hemibrain_type",
+        "ito_lee_hemilineage",
         "side",
     ]
     info = _get_table(which="info")
