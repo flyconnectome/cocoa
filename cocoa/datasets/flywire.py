@@ -129,7 +129,7 @@ class FlyWire(DataSet):
                 if exact:
                     filt = annot[col] == val
                 else:
-                    filt = annot[col].str.contains(val)
+                    filt = annot[col].str.contains(val, na=False)
 
             if isinstance(sides, str):
                 filt = filt & (annot.side == sides)
