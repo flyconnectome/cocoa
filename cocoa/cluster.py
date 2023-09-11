@@ -222,6 +222,11 @@ class Clustering:
         if not isinstance(augment, (pd.DataFrame, type(None))):
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
+        all_ids = np.concatenate([ds.neurons for ds in self.datasets])
+        if len(all_ids) > len(list(set(all_ids))):
+            print("Warning: Looks the clustering contains non-unique IDs")
+
+
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
             if not hasattr(ds, "edges_") or force_recompile:
