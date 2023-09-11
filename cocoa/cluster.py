@@ -403,7 +403,7 @@ class Clustering:
         labels = {}
         for ds in self.datasets:
             labels.update(dict(zip(ds.neurons, ds.get_labels(ds.neurons))))
-        table["label"] = table.id.map(labels)
+        table["label"] = table.id.map(labels).astype(str)
         # Neurons without an actual type will show up with their own ID as label
         # Here we set these to None
         table.loc[table.label == table.id.astype(str), 'label'] = None
@@ -527,6 +527,11 @@ class Clustering:
             return [self.dists_.columns.values[cl == i] for i in np.unique(cl)]
         else:
             raise ValueError(f'Unknown output format "{out}"')
+
+    @req_compile
+    def plot_dendrogram(self, ):
+        """Plot dendrogram."""
+        pass
 
     @req_compile
     def plot_clustermap(self, fontsize=4):
