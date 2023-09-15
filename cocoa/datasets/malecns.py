@@ -197,9 +197,9 @@ class MaleCNS(DataSet):
                 axis=0,
             ).drop_duplicates()
         elif self.upstream:
-            self.edges_ = us.groupby(["pre", "post"]).weight.sum()
+            self.edges_ = us.groupby(["pre", "post"], as_index=False).weight.sum()
         elif self.downstream:
-            self.edges_ = ds.groupby(["pre", "post"]).weight.sum()
+            self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
 
