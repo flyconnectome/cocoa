@@ -51,7 +51,7 @@ class MaleCNS(DataSet):
         downstream=True,
         use_types=True,
         use_sides=False,
-        exclude_queries=True,
+        exclude_queries=False,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
@@ -59,7 +59,7 @@ class MaleCNS(DataSet):
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
-        self.exclude_queries=exclude_queries
+        self.exclude_queries = exclude_queries
 
     def _add_neurons(self, x, exact=False, right_only=False):
         """Turn `x` into male CNS body IDs."""
@@ -174,7 +174,7 @@ class MaleCNS(DataSet):
                 sources=neu.NeuronCriteria(bodyId=x), client=client
             )
             if self.exclude_queries:
-                ds = ds[~ds.bodyId_pre.isin(x)]
+                ds = ds[~ds.bodyId_post.isin(x)]
             ds.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )

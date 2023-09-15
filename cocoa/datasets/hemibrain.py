@@ -57,7 +57,7 @@ class Hemibrain(DataSet):
         downstream=True,
         use_types=True,
         use_sides=False,
-        exclude_queries=True,
+        exclude_queries=False,
         live_annot=False,
     ):
         assert use_sides in (True, False, "relative")

@@ -68,7 +68,7 @@ class FlyWire(DataSet):
         downstream=True,
         use_types=True,
         use_sides=False,
-        exclude_queries=True,
+        exclude_queries=False,
         cn_file=None,
         live_annot=False,
         materialization=630,
@@ -180,7 +180,7 @@ class FlyWire(DataSet):
     def compile(self):
         """Compile edges."""
         # Make sure we're working on integers
-        x = np.asarray(self.neurons).astype(int)
+        x = np.asarray(self.neurons).astype(np.int64)
 
         mat = self.materialization
         il = flywire.is_latest_root(x, timestamp=f"mat_{mat}")
@@ -235,7 +235,7 @@ class FlyWire(DataSet):
             if self.upstream:
                 us = us[~us.pre.isin(x)]
             if self.downstream:
-                ds = ds[~ds.pre.isin(x)]
+                ds = ds[~ds.post.isin(x)]
 
         # For grouping by type simply replace pre and post IDs with their types
         # -> we'll aggregate later
