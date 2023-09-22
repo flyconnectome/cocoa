@@ -8,4 +8,4 @@ def cosine_plot(interactive=False, heatmap=True):
     """
     # Interactive could use either plotly (see https://plotly.com/python/clustergram/)
     # or bokeh/holoviz
-    # The later has a nicer interface in my mind
+    # The latter has a nicer interface in my mind

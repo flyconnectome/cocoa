@@ -67,7 +67,7 @@ def download_cache_file(url, force_reload="auto", verbose=True):
 def _load_static_flywire_annotations(mat=None, force_reload=False):
     """Download and cache FlyWire annotations from Github repo."""
     print(
-        f"Caching FlyWire annotations for mat '{mat}'... ",
+        f"Caching FlyWire annotations for materialization '{mat}'... ",
         end="",
         flush=True,
     )
@@ -113,7 +113,7 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
 def _load_live_flywire_annotations(mat=None):
     """Load live FlyWire annotations from SeaTable."""
     print(
-        f"Caching live FlyWire annotations for mat '{mat}'... ",
+        f"Caching live FlyWire annotations for materialization '{mat}'... ",
         end="",
         flush=True,
     )

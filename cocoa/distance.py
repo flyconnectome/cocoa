@@ -15,7 +15,7 @@ VECT_DTYPE = np.uint16
 def calculate_distance(vect, augment=None, metric="cosine", verbose=True):
     assert metric in ("cosine", "Euclidean")
 
-    printv(f"Calulating {metric} distances... ", verbose=verbose, end="", flush=True)
+    printv(f"Calculating {metric} distances... ", verbose=verbose, end="", flush=True)
     if metric == "Euclidean":
         dists = (
             squareform(pdist(vect, checks=False))

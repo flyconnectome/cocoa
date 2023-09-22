@@ -213,6 +213,7 @@ class Clustering:
         self
 
         """
+        start = time.time()
         if len(self) <= 1:
             raise ValueError("Clustering requires >=2 datasets")
 
@@ -224,7 +225,7 @@ class Clustering:
 
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
-            print("Warning: Looks the clustering contains non-unique IDs")
+            print("Warning: Looks the clustering contains non-unique IDs!")
 
 
         # First compile datasets if necessary
@@ -335,7 +336,10 @@ class Clustering:
             labels += ds.get_labels(ds.neurons).tolist()
         self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
         self.vect_sources_ = np.array(sources)
-        self.vect_labels = np.array(labels)
+        self.vect_labels_ = np.array(labels)
+
+        printv(f"Generated a {self.vect_.shape[0]} by {self.vect_.shape[1]} observation vector.",
+               verbose=verbose)
 
         # Calculate fraction of connectivity used for the observation vector
         syn_counts_before = {}
