@@ -84,7 +84,7 @@ class FlyWire(DataSet):
         self.live_annot = live_annot
         self.materialization = materialization
 
-        if self.cn_file:
+        if self.cn_file is not None:
             self.cn_file = Path(self.cn_file).expanduser()
             if not self.cn_file.is_file():
                 raise ValueError(f'"{self.cn_file}" is not a valid file')
@@ -182,16 +182,21 @@ class FlyWire(DataSet):
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(np.int64)
 
-        mat = self.materialization
-        il = flywire.is_latest_root(x, timestamp=f"mat_{mat}")
-        if any(~il):
-            raise ValueError(
-                "Some of the root IDs did not exist at the specified "
-                f"materialization ({mat}): {x[~il]}"
-            )
+        if self.materialization == 'auto':
+            self.materialization = mat = flywire.utils.find_mat_version(x)
+        else:
+            mat = self.materialization
+            timestamp = None if mat == "live" else f"mat_{mat}"
+
+            il = flywire.is_latest_root(x, timestamp=timestamp)
+            if any(~il):
+                raise ValueError(
+                    "Some of the root IDs does not exist for the specified "
+                    f"materialization ({mat}): {x[~il]}"
+                )
 
         us, ds = None, None
-        if self.cn_file:
+        if self.cn_file is not None:
             cn = pd.read_feather(self.cn_file).rename(
                 {
                     "pre_pt_root_id": "pre",
