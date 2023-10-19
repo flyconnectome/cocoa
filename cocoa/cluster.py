@@ -10,10 +10,7 @@ from tqdm.auto import tqdm
 # Fastcluster seems to be ~2X faster than scipy
 from fastcluster import linkage
 from scipy.cluster.hierarchy import cut_tree, leaves_list
-from scipy.spatial.distance import pdist, squareform
-from scipy.sparse import coo_array
-from sklearn.preprocessing import normalize
-from sklearn.utils.extmath import safe_sparse_dot
+from scipy.spatial.distance import squareform
 
 from .datasets.core import DataSet
 from .cluster_utils import extract_homogeneous_clusters, is_good
@@ -180,6 +177,7 @@ class Clustering:
         metric="cosine",
         force_recompile=False,
         exclude_labels=None,
+        cn_frac_threshold=None,
         augment=None,
         verbose=True,
     ):
@@ -358,12 +356,20 @@ class Clustering:
             verbose=verbose,
         )
 
+        if cn_frac_threshold is not None:
+            keep = (self.cn_frac_.fillna(0) > cn_frac_threshold).values
+            printv(f'Dropping {(~keep).sum()} neurons with <= {cn_frac_threshold} '
+                   'kept connectivity.', verbose=verbose)
+            self.vect_ = self.vect_.iloc[keep]
+            self.vect_sources_ = self.vect_sources_[keep]
+            self.vect_labels_ = self.vect_labels_[keep]
+
         # Calculate distances
         self.dists_ = calculate_distance(self.vect_,
                                          augment=augment,
                                          metric=metric,
                                          verbose=verbose)
-        self.dists_.columns = [f"{l}_{ds}" for l, ds in zip(labels, sources)]
+        self.dists_.columns = [f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)]
 
         printv("All done.", verbose=verbose)
         return self
@@ -681,6 +687,75 @@ class Clustering:
             pass
 
         return app
+
+    def remove_low_cn(self, threshold=0, recompile=False, inplace=False):
+        """Drop neurons with less than `threshold` connectivity going into
+        the clustering.
+
+        Parameters
+        ----------
+        threshold :     float [0-1]
+                        Connectivity fraction threshold for dropping neurons.
+        recompile :     bool
+                        For very large clusterings it can be faster to just
+                        recompile without the offending neurons instead of
+                        making copies of all the data.
+        inplace :       bool
+                        If True, will drop neurons inplace. If False, will
+                        return a copy.
+
+        """
+        if not hasattr(self, 'dists_'):
+            raise ValueError('Must run .compile() first.')
+
+        cl = self
+        if not inplace:
+            cl = cl.copy()
+
+        to_drop = (cl.cn_frac_.fillna(0) <= threshold).values
+
+        print(f'Dropping {to_drop.sum():,} ({to_drop.sum()/to_drop.shape[0]:.1%}) '
+              'neurons from the clustering.', flush=True)
+
+        cl.dists_ = cl.dists_.loc[~to_drop, ~to_drop]
+        cl.vect_ = cl.vect_.loc[~to_drop]
+        cl.vect_sources_ = cl.vect_sources_[~to_drop]
+        cl.vect_labels_ = cl.vect_labels_[~to_drop]
+        cl.cn_frac_ = cl.cn_frac_[~to_drop]
+
+        return cl
+
+    def split(self, x):
+        """Split this clustering.
+
+        Parameters
+        ----------
+        x :     int | iterable
+                How to split:
+                 - `integer` will split into N clusters by cutting the dendrogram
+                 - `iterable` must provide a label for each neuron
+
+        Returns
+        -------
+        list
+                List of Clusterings.
+
+        """
+        if not hasattr(self, 'dists_'):
+            raise ValueError('Must run .compile() first.')
+
+        if isinstance(x, int):
+            x = self.extract_clusters(x)
+
+        if not isinstance(x, (list, np.ndarray)):
+            raise TypeError(f'`x` must be integer or iterable, got "{type(x)}".')
+
+        if len(x) != len(self.dists_):
+            raise ValueError(f"Got {len(x)} labels for {len(self.dists_)} neurons.")
+
+        for l in x:
+            pass
+
 
 
 def _percent_to_color(x):
