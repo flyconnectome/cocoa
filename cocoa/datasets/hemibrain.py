@@ -74,6 +74,9 @@ class Hemibrain(DataSet):
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
+        if isinstance(x, pd.Series):
+            x = x.values
+
         if isinstance(x, str) and "," in x:
             x = x.split(",")
 
