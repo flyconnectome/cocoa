@@ -123,7 +123,7 @@ def _find_clusters_rec(
     G, clusters, eval_func, label_dict, max_dist=None, min_dist=None, verbose=False
 ):
     """Recursively find clusters."""
-    if G.is_directed:
+    if G.is_directed():
         G = G.to_undirected()
 
     # The root node should always be the last in the graph
@@ -151,7 +151,7 @@ def _find_clusters_rec(
     # If we are below the minimum distance we have to stop
     if min_dist and (dist <= min_dist):
         stop = True
-    # If the two clusters are bad...
+    # If one or both of the clusters are bad...
     elif not all(is_good):
         # ... and the distance between the two clusters below is not too big
         # we can stop
@@ -217,6 +217,9 @@ def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
         p = nx.shortest_path(G.to_undirected(), source=ix[cl == c1][0], target=None)
         sg = [p[i] for i in ix[cl == c1][1:]]
         sg = np.unique([i for l in sg for i in l])  # flatten
+
+        if len(sg) == 0:
+            continue
 
         # The root for this cluster
         root = max(sg)
