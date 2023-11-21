@@ -108,13 +108,14 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
         try:
             r.raise_for_status()
         except BaseException:
-            print("Failed to check annotation repo for updates")
+            print("Failed to check annotation repo for FlyWire annotation updates")
         # Last time anything was committed to the repo
-        last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
-        # Last time the local file was modified
-        last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
-        if last_mod < last_upd:
-            force_reload = True
+        if "pushed_at" in r.json():
+            last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
+            # Last time the local file was modified
+            last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
+            if last_mod < last_upd:
+                force_reload = True
 
     fp = download_cache_file(
         FLYWIRE_ANNOT_URL, force_reload=force_reload, verbose=False
@@ -204,13 +205,14 @@ def _load_static_hemibrain_annotations(force_reload=False):
         try:
             r.raise_for_status()
         except BaseException:
-            print("Failed to check annotation repo for updates")
+            print("Failed to check annotation repo for hemibrain annotation updates")
         # Last time anything was committed to the repo
-        last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
-        # Last time the local file was modified
-        last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
-        if last_mod < last_upd:
-            force_reload = True
+        if "pushed_at" in r.json():
+            last_upd = dt.datetime.fromisoformat(r.json()["pushed_at"][:-1])
+            # Last time the local file was modified
+            last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
+            if last_mod < last_upd:
+                force_reload = True
 
     fp = download_cache_file(
         HEMIBRAIN_ANNOT_URL, force_reload=force_reload, verbose=False
