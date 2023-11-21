@@ -96,6 +96,15 @@ class Clustering:
         """Datasets in this Clustering."""
         return self._datasets
 
+    def copy(self):
+        """Return copy of clustering."""
+        cl = Clustering()
+        cl._datasets = list(self.datasets)
+        for prop in ('dists_', 'cn_frac_', 'vect', 'vect_sources_', 'vect_labels_'):
+            if hasattr(self, prop):
+                setattr(cl, prop, getattr(self, prop).copy())
+        return cl
+
     def add_dataset(self, ds):
         """Add dataset(s)."""
         if isinstance(ds, (list, tuple)):
