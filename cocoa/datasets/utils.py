@@ -19,6 +19,35 @@ HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/
 ANNOT_REPO_URL = "https://api.github.com/repos/flyconnectome/flywire_annotations"
 
 
+MCNS_BAD_TYPES = (
+    "",
+    " ",
+    "Lamina_R1-R6",
+    "Descending",
+    "KC",
+    "ER",
+    "LC",
+    "PB",
+    "Ascending Interneuron",
+    "Delta",
+    "P1_L candidate",
+    "LT",
+    "MeMe",
+    "PFGs",
+    "Mi",
+    "VT",
+    "ML",
+    "EL",
+    "FB",
+    "Dm",
+    "DNp",
+    "FC",
+    "OL",
+    "T",
+    "Y",
+)
+
+
 def download_cache_file(url, force_reload="auto", verbose=True):
     """Load file from URL and cache locally.
 
@@ -218,9 +247,24 @@ def _get_hemibrain_meta(live=False):
 
 
 @lru_cache
-def _get_mcns_meta():
-    client = _get_clio_client("CNS")
-    return clio.fetch_annotations(None, client=client)
+def _get_mcns_meta(source):
+    assert source in ("clio", "neuprint")
+    if source == "clio":
+        client = _get_clio_client("CNS")
+        return clio.fetch_annotations(None, client=client)
+    else:
+        client = _get_neuprint_mcns_client()
+        return neu.fetch_neurons(
+            neu.NeuronCriteria(
+                statusLabel=(
+                    "Traced",
+                    "Roughly traced",
+                    "Prelim Roughly traced",
+                    "Anchor",
+                )
+            ),
+            client=client,
+        )[0]
 
 
 @lru_cache
@@ -302,10 +346,57 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
 
 
 @lru_cache
-def _get_mcns_types(add_side=False):
+def _get_mcns_types(
+    add_side=False, backfill_types=False, exclude_bad_types=True, source="clio"
+):
     """Fetch male CNS types from clio."""
-    print("Caching male CNS `type` annotations... ", end="", flush=True)
-    meta = _get_mcns_meta()
+    assert source in (
+        "clio",
+        "neuprint",
+    ), f'`source` must be clio or neuprint, got "{source}"'
+    print(f"Caching male CNS `type` annotations from {source}... ", end="", flush=True)
+
+    meta = _get_mcns_meta(source=source)
+
+    # Clio returns a "bodyid" column, neuprint a "bodyId" column
+    meta = meta.rename({"bodyid": "bodyId"}, axis=1)
+
+    # Drop some known bad types
+    if exclude_bad_types:
+        meta.loc[meta.type.isin(MCNS_BAD_TYPES), "type"] = None
+
+    if backfill_types:
+        if "group" in meta.columns:
+            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
+            # However, that identity neuron often doesn't have the group itself
+            # so we need to manually fix that
+            groups = (
+                meta[meta.group.notnull()]
+                .set_index("bodyId")["group"]
+                .astype(int)
+                .astype(str)
+                .to_dict()
+            )
+            # For each {bodyID: group} also add {group: group}
+            groups.update({v: v for v in groups.values()})
+
+            miss = meta.type.isnull()
+            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
+        if "instance" in meta.columns:
+            # Instance is a bit of a mixed bag: we can get things like
+            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
+            # which we will ignore for now
+
+            # First get {ID}_L types
+            num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
+            num_inst.columns = ["instance"]
+            num_inst["bodyId"] = meta.bodyId.values
+            num_inst = num_inst[num_inst.instance.notnull()]
+            num_inst = num_inst.set_index("bodyId").instance.to_dict()
+            num_inst.update({v: v for v in num_inst.values()})
+
+            miss = meta.type.isnull()
+            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
 
     # Drop untyped
     meta = meta[meta.type.notnull()]
@@ -315,7 +406,7 @@ def _get_mcns_types(add_side=False):
             f"{t}_{s}" for t, s in zip(meta.type.values, meta.soma_side.values)
         ]
     print("Done.")
-    return meta.set_index("bodyid").type.to_dict()
+    return meta.set_index("bodyId").type.to_dict()
 
 
 @lru_cache

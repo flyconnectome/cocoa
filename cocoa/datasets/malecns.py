@@ -27,20 +27,26 @@ class MaleCNS(DataSet):
 
     Parameters
     ----------
-    label :         str
-                    A label used for reporting, plotting, etc.
-    up/downstream : bool
-                    Whether to use up- and/or downstream connectivity.
-    use_types :     bool
-                    Whether to group by type.
-    use_side :      bool | 'relative'
-                    Only relevant if `group_by_type=True`:
-                        - if `True`, will split cell types into left/right/center
-                        - if `relative`, will label cell types as `ipsi` or
-                        `contra` depending on the side of the connected neuron
-    exclude_queries :  bool
-                    If True (default), will exclude connections between query
-                    neurons from the connectivity vector.
+    label :             str
+                        A label used for reporting, plotting, etc.
+    up/downstream :     bool
+                        Whether to use up- and/or downstream connectivity.
+    use_types :         bool
+                        Whether to group by type.
+    backfill_types :    bool
+                        If True, will backfill the type with information
+                        extracted from the instance and the group fields. Ignore
+                        if ``use_types=False``.
+    use_side :          bool | 'relative'
+                        Only relevant if `group_by_type=True`:
+                         - if `True`, will split cell types into left/right/center
+                         - if `relative`, will label cell types as `ipsi` or
+                           `contra` depending on the side of the connected neuron
+    meta_source :       "clio" | "neuprint
+                        Source for meta data.
+    exclude_queries :   bool
+                        If True (default), will exclude connections between query
+                        neurons from the connectivity vector.
 
     """
 
@@ -50,7 +56,9 @@ class MaleCNS(DataSet):
         upstream=True,
         downstream=True,
         use_types=True,
+        backfill_types=False,
         use_sides=False,
+        meta_source='clio',
         exclude_queries=False,
     ):
         assert use_sides in (True, False, "relative")
@@ -60,6 +68,8 @@ class MaleCNS(DataSet):
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
+        self.backfill_types = backfill_types
+        self.meta_source = meta_source
 
     def _add_neurons(self, x, exact=False, right_only=False):
         """Turn `x` into male CNS body IDs."""
@@ -78,7 +88,7 @@ class MaleCNS(DataSet):
         elif _is_int(x):
             ids = [np.int64(x)]
         else:
-            meta = _get_mcns_meta()
+            meta = _get_mcns_meta(source=self.meta_source)
             if right_only:
                 ids = meta.loc[
                     (meta.type == x) & (meta.side == "right"),
@@ -89,6 +99,19 @@ class MaleCNS(DataSet):
 
         return np.unique(np.array(ids, dtype=np.int64))
 
+    def copy(self):
+        """Make copy of dataset."""
+        x = type(self)(label=self.label)
+        x.neurons = self.neurons.copy()
+        x.upstream = self.upstream
+        x.downstream = self.downstream
+        x.use_types = self.use_types
+        x.backfill_types = self.backfill_types
+        x.use_sides = self.use_sides
+        x.exclude_queries = self.exclude_queries
+
+        return x
+
     def get_labels(self, x):
         """Fetch labels for given IDs."""
         if not isinstance(x, (list, np.ndarray)):
@@ -96,7 +119,7 @@ class MaleCNS(DataSet):
         x = np.asarray(x).astype(np.int64)
 
         # Fetch all types for this version
-        types = _get_mcns_types(add_side=False)
+        types = _get_mcns_types(add_side=False, source=self.meta_source)
 
         return np.array([types.get(i, i) for i in x])
 
@@ -124,7 +147,7 @@ class MaleCNS(DataSet):
         """Check if labels exists in dataset."""
         x = np.asarray(x)
 
-        types = _get_mcns_types(add_side=False)
+        types = _get_mcns_types(add_side=False, source=self.meta_source)
         all_types = np.unique(list(types.values()))
 
         return np.isin(x, list(all_types))
@@ -140,16 +163,13 @@ class MaleCNS(DataSet):
 
         if self.use_types:
             # Types is a {bodyId: type} dictionary
-            types = _get_mcns_types(add_side=False)
-            # For cases where {'AVLP123': 'AVLP123,AVLP323'} we need to change
-            # # {bodyId: 'AVLP123'} -> {bodyId: 'AVLP123,AVLP323'}
-            # types = {k: collapse_types.get(v, v) for k, v in types.items()}
-            # For cases where {12345: '12345,56788'} (i.e. new types)
-            # types.update(collapse_types)
+            types = _get_mcns_types(add_side=False,
+                                    backfill_types=self.backfill_types,
+                                    source=self.meta_source)
 
         # Fetch hemibrain vectors
         if self.upstream:
-            print("Fetching upstream connectivity... ", end="", flush=True)
+            #print("Fetching upstream connectivity... ", end="", flush=True)
             _, us = neu.fetch_adjacencies(
                 targets=neu.NeuronCriteria(bodyId=x), client=client
             )
@@ -166,10 +186,10 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            print("Done!")
+            #print("Done!")
 
         if self.downstream:
-            print("Fetching downstream connectivity... ", end="", flush=True)
+            #print("Fetching downstream connectivity... ", end="", flush=True)
             _, ds = neu.fetch_adjacencies(
                 sources=neu.NeuronCriteria(bodyId=x), client=client
             )
@@ -186,7 +206,7 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            print("Done!")
+            #print("Done!")
 
         if self.upstream and self.downstream:
             self.edges_ = pd.concat(
@@ -206,10 +226,10 @@ class MaleCNS(DataSet):
         return self
 
 
-def _collapse_connectivity_types(type_dict):
+def _collapse_connectivity_types(type_dict, source='clio'):
     """Remove connectivity type suffixes from {ID: type} dictionary."""
     type_dict = type_dict.copy()
-    hb_meta = _get_mcns_meta()
+    hb_meta = _get_mcns_meta(source=source)
     cn2morph = hb_meta.set_index("type").morphology_type.to_dict()
     for k, v in type_dict.items():
         new_v = ",".join([cn2morph.get(t, t) for t in v.split(",")])
