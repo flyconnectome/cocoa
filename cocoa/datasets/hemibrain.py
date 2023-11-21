@@ -115,6 +115,19 @@ class Hemibrain(DataSet):
 
         return np.unique(np.array(ids, dtype=np.int64))
 
+    def copy(self):
+        """Make copy of dataset."""
+        x = type(self)(label=self.label)
+        x.neurons = self.neurons.copy()
+        x.upstream = self.upstream
+        x.downstream = self.downstream
+        x.use_types = self.use_types
+        x.use_sides = self.use_sides
+        x.exclude_queries = self.exclude_queries
+        x.live_annot = self.live_annot
+
+        return x
+
     def get_labels(self, x):
         """Fetch labels for given IDs."""
         if not isinstance(x, (list, np.ndarray)):
