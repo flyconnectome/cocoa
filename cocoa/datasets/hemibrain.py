@@ -48,6 +48,7 @@ class Hemibrain(DataSet):
                     only.
 
     """
+
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE
 
     def __init__(
@@ -69,7 +70,7 @@ class Hemibrain(DataSet):
         self.exclude_queries = exclude_queries
         self.live_annot = live_annot
 
-    def _add_neurons(self, x, exact=False, sides=('left', 'right')):
+    def _add_neurons(self, x, exact=False, sides=("left", "right")):
         """Turn `x` into hemibrain body IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
@@ -83,13 +84,11 @@ class Hemibrain(DataSet):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(
-                    ids, self._add_neurons(t, exact=exact, sides=sides)
-                )
+                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
-            annot = _get_hemibrain_meta(live=self.live_annot)
+            annot = self.get_annotations()
 
             if ":" not in x:
                 if exact:
@@ -128,6 +127,10 @@ class Hemibrain(DataSet):
 
         return x
 
+    def get_annotations(self):
+        """Return annotations."""
+        return _get_hemibrain_meta(live=self.live_annot)
+
     def get_labels(self, x):
         """Fetch labels for given IDs."""
         if not isinstance(x, (list, np.ndarray)):
@@ -145,7 +148,9 @@ class Hemibrain(DataSet):
         x = np.asarray(x)
 
         types = _get_hemibrain_types(add_side=False, live=self.live_annot)
-        morph_types = _get_hemibrain_types(add_side=False, use_morphology_type=True, live=self.live_annot)
+        morph_types = _get_hemibrain_types(
+            add_side=False, use_morphology_type=True, live=self.live_annot
+        )
         all_types = np.unique(
             np.append(list(types.values()), list(morph_types.values()))
         )

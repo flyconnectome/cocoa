@@ -8,11 +8,13 @@ import matplotlib.colors as mcl
 import matplotlib.pyplot as plt
 
 from tqdm.auto import tqdm
+
 # Fastcluster seems to be ~2X faster than scipy
 from fastcluster import linkage
 from scipy.cluster.hierarchy import cut_tree, leaves_list
 from scipy.spatial.distance import squareform
 
+from .datasets import FlyWire, Hemibrain, MaleCNS
 from .datasets.core import DataSet
 from .cluster_utils import extract_homogeneous_clusters, is_good
 from .utils import make_iterable, req_compile, printv
@@ -69,7 +71,7 @@ For graph matching use `co.GraphMatcher([])`
 
 """
 
-__all__ = ["Clustering"]
+__all__ = ["Clustering", "generate_clustering"]
 
 
 CLUSTER_DEFAULTS = dict(method="ward")
@@ -100,7 +102,7 @@ class Clustering:
         """Return copy of clustering."""
         cl = Clustering()
         cl._datasets = list(self.datasets)
-        for prop in ('dists_', 'cn_frac_', 'vect', 'vect_sources_', 'vect_labels_'):
+        for prop in ("dists_", "cn_frac_", "vect", "vect_sources_", "vect_labels_"):
             if hasattr(self, prop):
                 setattr(cl, prop, getattr(self, prop).copy())
         return cl
@@ -235,7 +237,6 @@ class Clustering:
         if len(all_ids) > len(list(set(all_ids))):
             print("Warning: Looks the clustering contains non-unique IDs!")
 
-
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
             if not hasattr(ds, "edges_") or force_recompile:
@@ -346,8 +347,10 @@ class Clustering:
         self.vect_sources_ = np.array(sources)
         self.vect_labels_ = np.array(labels)
 
-        printv(f"Generated a {self.vect_.shape[0]} by {self.vect_.shape[1]} observation vector.",
-               verbose=verbose)
+        printv(
+            f"Generated a {self.vect_.shape[0]} by {self.vect_.shape[1]} observation vector.",
+            verbose=verbose,
+        )
 
         # Calculate fraction of connectivity used for the observation vector
         syn_counts_before = {}
@@ -368,24 +371,28 @@ class Clustering:
 
         if cn_frac_threshold is not None:
             keep = (self.cn_frac_.fillna(0) > cn_frac_threshold).values
-            printv(f'Dropping {(~keep).sum()} neurons with <= {cn_frac_threshold} '
-                   'kept connectivity.', verbose=verbose)
+            printv(
+                f"Dropping {(~keep).sum()} neurons with <= {cn_frac_threshold} "
+                "kept connectivity.",
+                verbose=verbose,
+            )
             self.vect_ = self.vect_.iloc[keep]
             self.vect_sources_ = self.vect_sources_[keep]
             self.vect_labels_ = self.vect_labels_[keep]
 
         # Calculate distances
-        self.dists_ = calculate_distance(self.vect_,
-                                         augment=augment,
-                                         metric=metric,
-                                         verbose=verbose)
-        self.dists_.columns = [f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)]
+        self.dists_ = calculate_distance(
+            self.vect_, augment=augment, metric=metric, verbose=verbose
+        )
+        self.dists_.columns = [
+            f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
+        ]
 
         printv("All done.", verbose=verbose)
         return self
 
     @req_compile
-    def to_table(self, clusters=None, link_method='ward', orient='neurons'):
+    def to_table(self, clusters=None, link_method="ward", orient="neurons"):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
@@ -405,9 +412,12 @@ class Clustering:
         DataFrame
 
         """
-        assert orient in ('neurons', 'clusters'), 'orient must be "clusters" or "neurons"'
+        assert orient in (
+            "neurons",
+            "clusters",
+        ), 'orient must be "clusters" or "neurons"'
 
-        if orient == 'clusters' and clusters is None:
+        if orient == "clusters" and clusters is None:
             raise ValueError('Must provide `clusters` when `orient="clusters"`')
 
         # Turn similarity into distances
@@ -416,8 +426,11 @@ class Clustering:
             x = 1 - x
 
         # Generate linkage and extract order
-        Z = linkage(squareform(self.dists_.values, checks=False),
-                    method=link_method, preserve_input=False)
+        Z = linkage(
+            squareform(self.dists_.values, checks=False),
+            method=link_method,
+            preserve_input=False,
+        )
         leafs = leaves_list(Z)
 
         # Generate table
@@ -431,7 +444,7 @@ class Clustering:
         table["label"] = table.id.map(labels).astype(str)
         # Neurons without an actual type will show up with their own ID as label
         # Here we set these to None
-        table.loc[table.label == table.id.astype(str), 'label'] = None
+        table.loc[table.label == table.id.astype(str), "label"] = None
 
         # Add a column for the dataset
         ds = {i: ds.label for ds in self.datasets for i in ds.neurons}
@@ -446,13 +459,15 @@ class Clustering:
         # Last but not least: add clusters (if provided)
         if clusters is not None:
             if not isinstance(clusters, (np.ndarray, list)):
-                raise TypeError('Expected `clusters` to be list or array, got '
-                                f'"{type(clusters)}".')
+                raise TypeError(
+                    "Expected `clusters` to be list or array, got "
+                    f'"{type(clusters)}".'
+                )
             clusters = np.asarray(clusters)
             if clusters.ndim != 1:
-                raise ValueError('`clusters` must be a flat list or array')
+                raise ValueError("`clusters` must be a flat list or array")
             if len(clusters) != len(table):
-                raise ValueError(f'Got {len(clusters)} for {len(table)} rows')
+                raise ValueError(f"Got {len(clusters)} for {len(table)} rows")
 
             table["cluster"] = clusters[leafs]
 
@@ -485,8 +500,9 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = linkage(squareform(x.values, checks=False),
-                    preserve_input=False, **defaults)
+        Z = linkage(
+            squareform(x.values, checks=False), preserve_input=False, **defaults
+        )
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -540,9 +556,14 @@ class Clustering:
             print("Warning: it appears that dataset labels are not unique")
 
         cl = extract_homogeneous_clusters(
-            self.dists_, self.vect_sources_, eval_func=eval_func, link_method=link_method,
-            max_dist=max_dist, min_dist=min_dist, min_dist_diff=min_dist_diff,
-            verbose=verbose
+            self.dists_,
+            self.vect_sources_,
+            eval_func=eval_func,
+            link_method=link_method,
+            max_dist=max_dist,
+            min_dist=min_dist,
+            min_dist_diff=min_dist_diff,
+            verbose=verbose,
         )
         if out == "membership":
             return cl
@@ -554,7 +575,9 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def plot_dendrogram(self, ):
+    def plot_dendrogram(
+        self,
+    ):
         """Plot dendrogram."""
         pass
 
@@ -635,7 +658,14 @@ class Clustering:
 
     @req_compile
     def plot_cn_frac(self, split=True, bins=None):
-        """Plot fraction of connectivity used."""
+        """Plot fraction of connectivity used.
+
+        Parameters
+        ----------
+        split :     bool
+                    If True, will split datasets into individual graphs.
+        bins
+        """
         if isinstance(bins, type(None)):
             bins = bins = np.arange(0, 1.05, 0.05)
 
@@ -670,7 +700,9 @@ class Clustering:
         return axes
 
     @req_compile
-    def interactive_dendrogram(self, link_method="ward", open=True, **kwargs):
+    def interactive_dendrogram(
+        self, clusters=None, labels=None, link_method="ward", open=True, **kwargs
+    ):
         """Make an interactive dendrogram using plotly dash.
 
         Parameters
@@ -682,7 +714,8 @@ class Clustering:
 
         app = interactive_dendrogram(
             self.dists_,
-            labels=self.extract_homogeneous_clusters(out="membership"),
+            clusters=clusters,
+            labels=labels,
             symbols=self.vect_sources_,
             marks=self.dists_.index.astype(str),
             linkage_method=link_method,
@@ -715,8 +748,8 @@ class Clustering:
                         return a copy.
 
         """
-        if not hasattr(self, 'dists_'):
-            raise ValueError('Must run .compile() first.')
+        if not hasattr(self, "dists_"):
+            raise ValueError("Must run .compile() first.")
 
         cl = self
         if not inplace:
@@ -724,8 +757,11 @@ class Clustering:
 
         to_drop = (cl.cn_frac_.fillna(0) <= threshold).values
 
-        print(f'Dropping {to_drop.sum():,} ({to_drop.sum()/to_drop.shape[0]:.1%}) '
-              'neurons from the clustering.', flush=True)
+        print(
+            f"Dropping {to_drop.sum():,} ({to_drop.sum()/to_drop.shape[0]:.1%}) "
+            "neurons from the clustering.",
+            flush=True,
+        )
 
         cl.dists_ = cl.dists_.loc[~to_drop, ~to_drop]
         cl.vect_ = cl.vect_.loc[~to_drop]
@@ -751,8 +787,8 @@ class Clustering:
                 List of Clusterings.
 
         """
-        if not hasattr(self, 'dists_'):
-            raise ValueError('Must run .compile() first.')
+        if not hasattr(self, "dists_"):
+            raise ValueError("Must run .compile() first.")
 
         if isinstance(x, int):
             x = self.extract_clusters(x)
@@ -767,7 +803,6 @@ class Clustering:
             pass
 
 
-
 def _percent_to_color(x):
     """Take fraction and turn into color category."""
     if x < 0.1:
@@ -779,3 +814,103 @@ def _percent_to_color(x):
     else:
         c = "g"
     return mcl.to_rgb(c)
+
+
+def generate_clustering(
+    fw=None,
+    hb=None,
+    mcns=None,
+    live_annot=True,
+    upstream=True,
+    downstream=True,
+    fw_cn_file=None,
+    fw_materialization=630,
+):
+    """Shortcut for generating a clustering on the pre-defined datasets.
+
+    Parameters
+    ----------
+    fw :        str | int | list thereof
+                FlyWire root ID(s) or cell type(s). Will automatically be split
+                into left and right.
+    fw :        str | int | list thereof
+                Hemibrain body ID(s) or cell type(s). Will automatically be split
+                into left and right.
+    mcns :      str | int | list thereof
+                MaleCNS body ID(s) or cell type(s). Will automatically be split
+                into left and right.
+    """
+    datasets = []
+
+    if fw is not None:
+        # Use the dataset to parse `fw` into root IDs
+        fw = FlyWire(
+            live_annot=live_annot, materialization=fw_materialization
+        ).add_neurons(fw)
+        # Now split into left/right
+        fw_ann = fw.get_annotations()
+        is_left = np.isin(fw.neurons, fw_ann[fw_ann.side == "left"].root_id.astype(int))
+        fw_left = FlyWire(
+            live_annot=live_annot,
+            upstream=upstream,
+            downstream=downstream,
+            label="FwL",
+            cn_file=fw_cn_file,
+            materialization=fw_materialization,
+        ).add_neurons(np.array(fw.neurons)[is_left])
+        fw_right = FlyWire(
+            live_annot=live_annot,
+            upstream=upstream,
+            downstream=downstream,
+            label="FwR",
+            cn_file=fw_cn_file,
+            materialization=fw_materialization,
+        ).add_neurons(np.array(fw.neurons)[~is_left])
+
+        if len(fw_left.neurons):
+            datasets.append(fw_left)
+        if len(fw_right.neurons):
+            datasets.append(fw_right)
+
+    if hb is not None:
+        # Use the dataset to parse `hb` into body IDs
+        hb = Hemibrain(live_annot=live_annot).add_neurons(hb)
+        # Now split into left/right
+        hb_ann = hb.get_annotations()
+        is_left = np.isin(hb.neurons, hb_ann[hb_ann.side == "left"].root_id.astype(int))
+        hb_left = Hemibrain(
+            live_annot=live_annot, upstream=upstream, downstream=downstream, label="HbL"
+        ).add_neurons(np.array(hb.neurons)[is_left])
+        hb_right = Hemibrain(
+            live_annot=live_annot, upstream=upstream, downstream=downstream, label="HbR"
+        ).add_neurons(np.array(hb.neurons)[~is_left])
+
+        if len(fw_left.neurons):
+            datasets.append(hb_left)
+        if len(fw_right.neurons):
+            datasets.append(hb_right)
+
+    if mcns is not None:
+        # Use the dataset to parse `mcns` into body IDs
+        mcns = MaleCNS().add_neurons(mcns)
+        # Now split into left/right
+        mcns_ann = mcns.get_annotations()
+        is_left = np.isin(
+            mcns.neurons, mcns_ann[mcns_ann.side == "left"].root_id.astype(int)
+        )
+        mcns_left = MaleCNS(
+            upstream=upstream, downstream=downstream, label="McnsL"
+        ).add_neurons(np.array(mcns.neurons)[is_left])
+        mcns_right = MaleCNS(
+            upstream=upstream, downstream=downstream, label="McnsR"
+        ).add_neurons(np.array(mcns.neurons)[~is_left])
+
+        if len(mcns_left.neurons):
+            datasets.append(mcns_left)
+        if len(mcns_right.neurons):
+            datasets.append(mcns_right)
+
+    if not len(datasets):
+        raise ValueError("Must provide IDs for at least one dataset")
+
+    return Clustering(datasets)

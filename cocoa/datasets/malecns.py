@@ -58,7 +58,7 @@ class MaleCNS(DataSet):
         use_types=True,
         backfill_types=False,
         use_sides=False,
-        meta_source='clio',
+        meta_source="clio",
         exclude_queries=False,
     ):
         assert use_sides in (True, False, "relative")
@@ -88,7 +88,7 @@ class MaleCNS(DataSet):
         elif _is_int(x):
             ids = [np.int64(x)]
         else:
-            meta = _get_mcns_meta(source=self.meta_source)
+            meta = self.get_annotations()
             if right_only:
                 ids = meta.loc[
                     (meta.type == x) & (meta.side == "right"),
@@ -111,6 +111,10 @@ class MaleCNS(DataSet):
         x.exclude_queries = self.exclude_queries
 
         return x
+
+    def get_annotations(self):
+        """Return annotations."""
+        return _get_mcns_meta(source=self.meta_source)
 
     def get_labels(self, x):
         """Fetch labels for given IDs."""
@@ -163,13 +167,15 @@ class MaleCNS(DataSet):
 
         if self.use_types:
             # Types is a {bodyId: type} dictionary
-            types = _get_mcns_types(add_side=False,
-                                    backfill_types=self.backfill_types,
-                                    source=self.meta_source)
+            types = _get_mcns_types(
+                add_side=False,
+                backfill_types=self.backfill_types,
+                source=self.meta_source,
+            )
 
         # Fetch hemibrain vectors
         if self.upstream:
-            #print("Fetching upstream connectivity... ", end="", flush=True)
+            # print("Fetching upstream connectivity... ", end="", flush=True)
             _, us = neu.fetch_adjacencies(
                 targets=neu.NeuronCriteria(bodyId=x), client=client
             )
@@ -186,10 +192,10 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            #print("Done!")
+            # print("Done!")
 
         if self.downstream:
-            #print("Fetching downstream connectivity... ", end="", flush=True)
+            # print("Fetching downstream connectivity... ", end="", flush=True)
             _, ds = neu.fetch_adjacencies(
                 sources=neu.NeuronCriteria(bodyId=x), client=client
             )
@@ -206,7 +212,7 @@ class MaleCNS(DataSet):
                     sides=None if not self.use_sides else _get_hb_sides(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            #print("Done!")
+            # print("Done!")
 
         if self.upstream and self.downstream:
             self.edges_ = pd.concat(
@@ -226,7 +232,7 @@ class MaleCNS(DataSet):
         return self
 
 
-def _collapse_connectivity_types(type_dict, source='clio'):
+def _collapse_connectivity_types(type_dict, source="clio"):
     """Remove connectivity type suffixes from {ID: type} dictionary."""
     type_dict = type_dict.copy()
     hb_meta = _get_mcns_meta(source=source)

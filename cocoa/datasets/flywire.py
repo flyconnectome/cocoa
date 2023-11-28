@@ -104,6 +104,9 @@ class FlyWire(DataSet):
         if not exact and isinstance(x, str) and "," in x:
             x = x.split(",")
 
+        if isinstance(x, pd.Series):
+            x = x.values
+
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
@@ -111,10 +114,7 @@ class FlyWire(DataSet):
         elif _is_int(x):
             ids = [int(x)]
         else:
-            if self.live_annot:
-                annot = _load_live_flywire_annotations(mat=self.materialization)
-            else:
-                annot = _load_static_flywire_annotations(mat=self.materialization)
+            annot = self.get_annotations()
 
             if ":" not in x:
                 if exact:
@@ -153,6 +153,13 @@ class FlyWire(DataSet):
         x.materialization = self.materialization
 
         return x
+
+    def get_annotations(self):
+        """Return annotations."""
+        if self.live_annot:
+            return _load_live_flywire_annotations(mat=self.materialization)
+        else:
+            return _load_static_flywire_annotations(mat=self.materialization)
 
     def get_labels(self, x, verbose=False):
         """Fetch labels for given IDs."""
@@ -197,7 +204,7 @@ class FlyWire(DataSet):
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(np.int64)
 
-        if self.materialization == 'auto':
+        if self.materialization == "auto":
             self.materialization = mat = flywire.utils.find_mat_version(x)
         else:
             mat = self.materialization
