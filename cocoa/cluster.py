@@ -833,7 +833,7 @@ def generate_clustering(
     fw :        str | int | list thereof
                 FlyWire root ID(s) or cell type(s). Will automatically be split
                 into left and right.
-    fw :        str | int | list thereof
+    hb :        str | int | list thereof
                 Hemibrain body ID(s) or cell type(s). Will automatically be split
                 into left and right.
     mcns :      str | int | list thereof
@@ -877,18 +877,27 @@ def generate_clustering(
         hb = Hemibrain(live_annot=live_annot).add_neurons(hb)
         # Now split into left/right
         hb_ann = hb.get_annotations()
-        is_left = np.isin(hb.neurons, hb_ann[hb_ann.side == "left"].root_id.astype(int))
-        hb_left = Hemibrain(
-            live_annot=live_annot, upstream=upstream, downstream=downstream, label="HbL"
-        ).add_neurons(np.array(hb.neurons)[is_left])
-        hb_right = Hemibrain(
-            live_annot=live_annot, upstream=upstream, downstream=downstream, label="HbR"
-        ).add_neurons(np.array(hb.neurons)[~is_left])
+        is_left = np.isin(hb.neurons, hb_ann[hb_ann.side == "left"].bodyId.astype(int))
 
-        if len(fw_left.neurons):
-            datasets.append(hb_left)
-        if len(fw_right.neurons):
-            datasets.append(hb_right)
+        if any(is_left):
+            datasets.append(
+                Hemibrain(
+                    live_annot=live_annot,
+                    upstream=upstream,
+                    downstream=downstream,
+                    label="HbL",
+                ).add_neurons(np.array(hb.neurons)[is_left])
+            )
+
+        if any(~is_left):
+            datasets.append(
+                Hemibrain(
+                    live_annot=live_annot,
+                    upstream=upstream,
+                    downstream=downstream,
+                    label="HbR",
+                ).add_neurons(np.array(hb.neurons)[~is_left])
+            )
 
     if mcns is not None:
         # Use the dataset to parse `mcns` into body IDs
