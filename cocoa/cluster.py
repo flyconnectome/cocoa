@@ -582,18 +582,31 @@ class Clustering:
         pass
 
     @req_compile
-    def plot_clustermap(self, fontsize=4):
+    def plot_clustermap(
+        self, x_labels="{label}_{dataset}", y_labels="{id}", fontsize=4
+    ):
         """Plot connectivity distance as cluster heatmap.
+
+        Parameters
+        ----------
+        x/y_labels :    str
+                        Formatting for tick labels on x- and y-axis, respectively.
+                        Possible values are "id", "label" and "dataset".
+        fontsize :      int | float
+                        Fontsize for tick labels.
 
         Returns
         -------
-        cm :        sns.clustermap
-                    The distances are available via ``cm.data``
+        cm :            sns.clustermap
+                        The distances are available via ``cm.data``
 
         """
         dists = self.dists_
-        Z = linkage(squareform(dists.values, checks=False),
-                    preserve_input=False, **CLUSTER_DEFAULTS)
+        Z = linkage(
+            squareform(dists.values, checks=False),
+            preserve_input=False,
+            **CLUSTER_DEFAULTS,
+        )
 
         # We seem to sometimes get negative cluster distances which dendrogram()
         # does not like - perhaps something to do with neurons not having any
@@ -602,14 +615,18 @@ class Clustering:
 
         row_colors = [_percent_to_color(v) for v in self.cn_frac_.values]
 
-        ds = {i: ds.label for ds in self.datasets for i in ds.neurons}
+        ds_dict = {i: ds.label for ds in self.datasets for i in ds.neurons}
         ds_cmap = dict(
             zip(
                 [ds.label for ds in self.datasets],
                 sns.color_palette("muted", len(self.datasets)),
             )
         )
-        col_colors = [ds_cmap.get(ds.get(i), "k") for i in dists.index]
+        col_colors = [ds_cmap.get(ds_dict.get(i), "k") for i in dists.index]
+
+        label_dict = {}
+        for ds in self.datasets:
+            label_dict.update(dict(zip(ds.neurons, ds.get_labels(ds.neurons))))
 
         cm = sns.clustermap(
             dists,
@@ -624,8 +641,18 @@ class Clustering:
         ix = cm.dendrogram_row.reordered_ind
         ax.set_xticks(np.arange(len(dists)) + 0.5)
         ax.set_yticks(np.arange(len(dists)) + 0.5)
-        ax.set_xticklabels(dists.columns[ix], fontsize=fontsize)
-        ax.set_yticklabels(dists.index[ix], fontsize=fontsize)
+
+        xl = [
+            x_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
+            for i in dists.index.values[ix]
+        ]
+        yl = [
+            y_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
+            for i in dists.index.values[ix]
+        ]
+
+        ax.set_xticklabels(xl, fontsize=fontsize)
+        ax.set_yticklabels(yl, fontsize=fontsize)
 
         # Bring back the scale for one of the dendrograms
         ax_d = cm.ax_col_dendrogram
