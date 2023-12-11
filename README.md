@@ -31,6 +31,8 @@ secrets:
 2. To use neuPrint datasets (hemibrain, MANC and maleCNS) you need to set your
    API token as `NEUPRINT_APPLICATION_CREDENTIALS`
    (see [neuprint-python](https://github.com/connectome-neuprint/neuprint-python))
+3. To use the CAVE/chunkedgraph datasets (FlyWire, FANC) you need to have your
+   CAVE token set (see [fafbseg](https://fafbseg-py.readthedocs.io/en/latest/source/tutorials/flywire_setup.html))
 
 ## Examples
 
