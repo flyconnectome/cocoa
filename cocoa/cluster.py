@@ -847,6 +847,7 @@ def generate_clustering(
     fw=None,
     hb=None,
     mcns=None,
+    split_lr=True,
     live_annot=True,
     upstream=True,
     downstream=True,
@@ -859,92 +860,133 @@ def generate_clustering(
     ----------
     fw :        str | int | list thereof
                 FlyWire root ID(s) or cell type(s). Will automatically be split
-                into left and right.
+                into left and right. See also `split_lr` parameter.
     hb :        str | int | list thereof
                 Hemibrain body ID(s) or cell type(s). Will automatically be split
-                into left and right.
+                into left and right. See also `split_lr` parameter.
     mcns :      str | int | list thereof
                 MaleCNS body ID(s) or cell type(s). Will automatically be split
-                into left and right.
+                into left and right. See also `split_lr` parameter.
+    split_lr :  bool
+                If True, will split IDs into left and right automatically.
+    live_annot : bool
+                Whether to use live annotations. This requires access to SeatTable.
+    upstream :  bool
+                Whether to use input connectivity.
+    downstream : bool
+                Whether to use output connectivity.
+    fw_cn_file : str
+                Path to FlyWire edge list.
+    fw_materialization : int
+                Materialization to use for FlyWire. Must match `fw_cn_file` if
+                that is provided.
+
     """
     datasets = []
 
     if fw is not None:
         # Use the dataset to parse `fw` into root IDs
         fw = FlyWire(
-            live_annot=live_annot, materialization=fw_materialization
+            live_annot=live_annot,
+            upstream=upstream,
+            downstream=downstream,
+            label="FW",
+            cn_file=fw_cn_file,
+            materialization=fw_materialization,
         ).add_neurons(fw)
         # Now split into left/right
-        fw_ann = fw.get_annotations()
-        is_left = np.isin(fw.neurons, fw_ann[fw_ann.side == "left"].root_id.astype(int))
-        fw_left = FlyWire(
-            live_annot=live_annot,
-            upstream=upstream,
-            downstream=downstream,
-            label="FwL",
-            cn_file=fw_cn_file,
-            materialization=fw_materialization,
-        ).add_neurons(np.array(fw.neurons)[is_left])
-        fw_right = FlyWire(
-            live_annot=live_annot,
-            upstream=upstream,
-            downstream=downstream,
-            label="FwR",
-            cn_file=fw_cn_file,
-            materialization=fw_materialization,
-        ).add_neurons(np.array(fw.neurons)[~is_left])
+        if split_lr:
+            fw_ann = fw.get_annotations()
+            is_left = np.isin(
+                fw.neurons, fw_ann[fw_ann.side == "left"].root_id.astype(int)
+            )
+            fw_left = FlyWire(
+                live_annot=live_annot,
+                upstream=upstream,
+                downstream=downstream,
+                label="FwL",
+                cn_file=fw_cn_file,
+                materialization=fw_materialization,
+            ).add_neurons(np.array(fw.neurons)[is_left])
+            fw_right = FlyWire(
+                live_annot=live_annot,
+                upstream=upstream,
+                downstream=downstream,
+                label="FwR",
+                cn_file=fw_cn_file,
+                materialization=fw_materialization,
+            ).add_neurons(np.array(fw.neurons)[~is_left])
 
-        if len(fw_left.neurons):
-            datasets.append(fw_left)
-        if len(fw_right.neurons):
-            datasets.append(fw_right)
+            if len(fw_left.neurons):
+                datasets.append(fw_left)
+            if len(fw_right.neurons):
+                datasets.append(fw_right)
+        elif len(fw.neurons):
+            datasets.append(fw)
 
     if hb is not None:
         # Use the dataset to parse `hb` into body IDs
-        hb = Hemibrain(live_annot=live_annot).add_neurons(hb)
+        hb = Hemibrain(
+            live_annot=live_annot,
+            upstream=upstream,
+            downstream=downstream,
+            label="HB",
+        ).add_neurons(hb)
+
         # Now split into left/right
-        hb_ann = hb.get_annotations()
-        is_left = np.isin(hb.neurons, hb_ann[hb_ann.side == "left"].bodyId.astype(int))
-
-        if any(is_left):
-            datasets.append(
-                Hemibrain(
-                    live_annot=live_annot,
-                    upstream=upstream,
-                    downstream=downstream,
-                    label="HbL",
-                ).add_neurons(np.array(hb.neurons)[is_left])
+        if split_lr:
+            hb_ann = hb.get_annotations()
+            is_left = np.isin(
+                hb.neurons, hb_ann[hb_ann.side == "left"].bodyId.astype(int)
             )
 
-        if any(~is_left):
-            datasets.append(
-                Hemibrain(
-                    live_annot=live_annot,
-                    upstream=upstream,
-                    downstream=downstream,
-                    label="HbR",
-                ).add_neurons(np.array(hb.neurons)[~is_left])
-            )
+            if any(is_left):
+                datasets.append(
+                    Hemibrain(
+                        live_annot=live_annot,
+                        upstream=upstream,
+                        downstream=downstream,
+                        label="HbL",
+                    ).add_neurons(np.array(hb.neurons)[is_left])
+                )
+
+            if any(~is_left):
+                datasets.append(
+                    Hemibrain(
+                        live_annot=live_annot,
+                        upstream=upstream,
+                        downstream=downstream,
+                        label="HbR",
+                    ).add_neurons(np.array(hb.neurons)[~is_left])
+                )
+        elif len(hb.neurons):
+            datasets.append(hb)
 
     if mcns is not None:
         # Use the dataset to parse `mcns` into body IDs
-        mcns = MaleCNS().add_neurons(mcns)
-        # Now split into left/right
-        mcns_ann = mcns.get_annotations()
-        is_left = np.isin(
-            mcns.neurons, mcns_ann[mcns_ann.side == "left"].root_id.astype(int)
-        )
-        mcns_left = MaleCNS(
+        mcns = MaleCNS(
             upstream=upstream, downstream=downstream, label="McnsL"
-        ).add_neurons(np.array(mcns.neurons)[is_left])
-        mcns_right = MaleCNS(
-            upstream=upstream, downstream=downstream, label="McnsR"
-        ).add_neurons(np.array(mcns.neurons)[~is_left])
+        ).add_neurons(mcns)
 
-        if len(mcns_left.neurons):
-            datasets.append(mcns_left)
-        if len(mcns_right.neurons):
-            datasets.append(mcns_right)
+        # Now split into left/right
+        if split_lr:
+            mcns_ann = mcns.get_annotations()
+            is_left = np.isin(
+                mcns.neurons, mcns_ann[mcns_ann.side == "left"].root_id.astype(int)
+            )
+            mcns_left = MaleCNS(
+                upstream=upstream, downstream=downstream, label="McnsL"
+            ).add_neurons(np.array(mcns.neurons)[is_left])
+            mcns_right = MaleCNS(
+                upstream=upstream, downstream=downstream, label="McnsR"
+            ).add_neurons(np.array(mcns.neurons)[~is_left])
+
+            if len(mcns_left.neurons):
+                datasets.append(mcns_left)
+            if len(mcns_right.neurons):
+                datasets.append(mcns_right)
+        elif len(mcns.neurons):
+            datasets.append(mcns)
 
     if not len(datasets):
         raise ValueError("Must provide IDs for at least one dataset")
