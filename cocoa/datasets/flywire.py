@@ -241,7 +241,7 @@ class FlyWire(DataSet):
                 ds = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             if self.upstream:
-                us = flywire.fetch_connectivity(
+                us = flywire.get_connectivity(
                     x,
                     upstream=True,
                     downstream=False,
@@ -249,10 +249,10 @@ class FlyWire(DataSet):
                     filtered=True,
                     min_score=50,
                     progress=False,
-                    mat=mat,
+                    materialization=mat,
                 )
             if self.downstream:
-                ds = flywire.fetch_connectivity(
+                ds = flywire.get_connectivity(
                     x,
                     upstream=False,
                     downstream=True,
@@ -260,7 +260,7 @@ class FlyWire(DataSet):
                     filtered=True,
                     min_score=50,
                     progress=False,
-                    mat=mat,
+                    materialization=mat,
                 )
 
         if self.exclude_queries:

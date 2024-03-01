@@ -5,7 +5,7 @@ scikit-learn
 sea-serpent
 seaborn
 matplotlib
-fafbseg
+fafbseg >= 3.0.0
 requests
 dash
 dash-bootstrap-components
