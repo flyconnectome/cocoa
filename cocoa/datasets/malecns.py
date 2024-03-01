@@ -14,6 +14,7 @@ from .utils import (
     _get_hb_sides,
     _add_types,
     _get_clio_client,
+    _parse_neuprint_roi,
 )
 
 __all__ = ["MaleCNS"]
@@ -35,13 +36,18 @@ class MaleCNS(DataSet):
                         Whether to group by type.
     backfill_types :    bool
                         If True, will backfill the type with information
-                        extracted from the instance and the group fields. Ignore
+                        extracted from other columns such as flywire_type,
+                        hemibrain_type, instance and the group fields. Ignored
                         if ``use_types=False``.
     use_side :          bool | 'relative'
                         Only relevant if `group_by_type=True`:
                          - if `True`, will split cell types into left/right/center
                          - if `relative`, will label cell types as `ipsi` or
                            `contra` depending on the side of the connected neuron
+    rois :              str | list thereof, optional
+                        Restrict connectivity to these regions of interest. Works
+                        with super-level ROIs: e.g. "Brain" or "VNC" will be
+                        automatically parsed into the appropriate sub-ROIs.
     meta_source :       "clio" | "neuprint
                         Source for meta data.
     exclude_queries :   bool
@@ -58,6 +64,7 @@ class MaleCNS(DataSet):
         use_types=True,
         backfill_types=False,
         use_sides=False,
+        rois=None,
         meta_source="clio",
         exclude_queries=False,
     ):
@@ -70,6 +77,11 @@ class MaleCNS(DataSet):
         self.exclude_queries = exclude_queries
         self.backfill_types = backfill_types
         self.meta_source = meta_source
+
+        if rois is not None:
+            self.rois = _parse_neuprint_roi(rois)
+        else:
+            self.rois = None
 
     def _add_neurons(self, x, exact=False, right_only=False):
         """Turn `x` into male CNS body IDs."""
@@ -177,7 +189,7 @@ class MaleCNS(DataSet):
         if self.upstream:
             # print("Fetching upstream connectivity... ", end="", flush=True)
             _, us = neu.fetch_adjacencies(
-                targets=neu.NeuronCriteria(bodyId=x), client=client
+                targets=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
             )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
@@ -197,7 +209,7 @@ class MaleCNS(DataSet):
         if self.downstream:
             # print("Fetching downstream connectivity... ", end="", flush=True)
             _, ds = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x), client=client
+                sources=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
             )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]

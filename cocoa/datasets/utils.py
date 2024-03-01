@@ -572,3 +572,65 @@ def _morphology_to_connectivity_types(x, live=False):
             new_labels.append(morph2cn.get(label, label))
 
     return np.array(new_labels)
+
+
+def _parse_neuprint_roi(roi, client):
+    """Parse Neuprint ROI string.
+
+    This function serves two purposes:
+     1. Raise an error if the ROI does not exist in the dataset.
+     2. If the ROI is a super-ROI (e.g. "brain") it will get parsed into the
+        "primary" ROIs that make it up.
+
+    Parameters
+    ----------
+    roi :   str | list thereof
+            Neuprint ROI string(s).
+    client : neuprint.Client
+            Neuprint client.
+
+    Returns
+    -------
+    rois :  list
+            List of ROIs.
+
+    """
+    if isinstance(roi, str):
+        roi = [roi]
+
+    def traverse_hierarchy(hierarchy, roi):
+        """Find a given ROI among the hierarchy."""
+        if hierarchy["name"] == roi:
+            return hierarchy
+        for sub in hierarchy.get("children", []):
+            found = traverse_hierarchy(sub, roi)
+            if found:
+                return found
+        return None
+
+    def collect_primary_rois(hierarchy, rois=[]):
+        """Collect primary ROIs from a super-ROI hierarchy."""
+        if hierarchy['name'] in client.primary_rois:
+            rois.append(hierarchy['name'])
+
+        for sub in hierarchy.get("children", []):
+            _ = collect_primary_rois(sub, rois)
+
+        return rois
+
+    rois = []
+    for r in roi:
+        # If this is a primary ROI, we can just add it
+        if r in client.primary_rois:
+            rois.append(r)
+            continue
+
+        # If it's a super-ROI, we need to parse it
+        hierarchy = client.meta["roiHierarchy"]
+        found = traverse_hierarchy(hierarchy, r)
+        if not found:
+            # This really should not happen
+            raise ValueError(f"Could not find '{r}' in the ROI hierarchy.")
+        rois.extend(collect_primary_rois(found))
+
+    return rois
