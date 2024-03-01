@@ -369,6 +369,12 @@ def _get_mcns_types(
         meta.loc[meta.type.isin(MCNS_BAD_TYPES), "type"] = None
 
     if backfill_types:
+        if "flywire_type" in meta.columns:
+            meta["type"] = meta.type.fillna(meta.flywire_type)
+
+        if "hemibrain_type" in meta.columns:
+            meta["type"] = meta.type.fillna(meta.hemibrain_type)
+
         if "group" in meta.columns:
             # `group` is a body ID of one of the neurons in that group (e.g. 10063)
             # However, that identity neuron often doesn't have the group itself
