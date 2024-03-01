@@ -45,6 +45,7 @@ MCNS_BAD_TYPES = (
     "OL",
     "T",
     "Y",
+    "TuBu"
 )
 
 
