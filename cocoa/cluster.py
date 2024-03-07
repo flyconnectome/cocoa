@@ -189,6 +189,7 @@ class Clustering:
         metric="cosine",
         force_recompile=False,
         exclude_labels=None,
+        include_labels=None,
         cn_frac_threshold=None,
         augment=None,
         verbose=True,
@@ -200,8 +201,8 @@ class Clustering:
         join :      "inner" | "outer" | "existing"
                     How to combine the dataset connectivity vectors:
                       - "existing" (default) will check if a label exists in
-                        theory and use it even if it's not present in given
-                        connectivity vector
+                        theory and use it even if it's not present in the
+                        connectivity vectors of all datasets
                       - "inner" will get the intersection of all labels across
                         the connectivity vectors
                       - "outer" will use all available labels
@@ -210,6 +211,9 @@ class Clustering:
         exclude_labels : str | list of str, optional
                     If provided will exclude given labels from the observation
                     vector. This uses regex!
+        include_labels : str | list of str, optional
+                    If provided will only include given labels from the
+                    observation vector. This uses regex!
         force_recompile : bool
                     If True, will recompile connectivity vectors for each data
                     set even if they already exist.
@@ -223,12 +227,14 @@ class Clustering:
         self
 
         """
-        start = time.time()
         if len(self) <= 1:
             raise ValueError("Clustering requires >=2 datasets")
 
         assert metric in ("cosine", "Euclidean")
         assert join in ("inner", "outer", "existing")
+
+        if include_labels is not None and exclude_labels is not None:
+            raise ValueError("Can't provide both `include_labels` and `exclude_labels`")
 
         if not isinstance(augment, (pd.DataFrame, type(None))):
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
@@ -316,6 +322,19 @@ class Clustering:
                 )
                 to_use = to_use[~np.isin(to_use, list(to_exclude))]  # keep the list()
 
+        # Include labels
+        if include_labels is not None:
+            to_include = set()
+            for la in make_iterable(include_labels):
+                to_include |= {t for t in to_use if re.match(la, t)}
+            if to_include:
+                printv(
+                    f"Including {len(to_include)} of {len(to_use)} labels: "
+                    f"{to_include}",
+                    verbose=verbose,
+                )
+                to_use = to_use[np.isin(to_use, list(to_include))]
+
         # Subset edge lists to these labels
         for ds in self.datasets:
             edges = ds.edges_proc_
@@ -348,7 +367,7 @@ class Clustering:
         self.vect_labels_ = np.array(labels)
 
         printv(
-            f"Generated a {self.vect_.shape[0]} by {self.vect_.shape[1]} observation vector.",
+            f"Generated a {self.vect_.shape[0]:,} by {self.vect_.shape[1]:,} observation vector.",
             verbose=verbose,
         )
 
@@ -372,7 +391,7 @@ class Clustering:
         if cn_frac_threshold is not None:
             keep = (self.cn_frac_.fillna(0) > cn_frac_threshold).values
             printv(
-                f"Dropping {(~keep).sum()} neurons with <= {cn_frac_threshold} "
+                f"Dropping {(~keep).sum():,} neurons with <= {cn_frac_threshold} "
                 "kept connectivity.",
                 verbose=verbose,
             )
