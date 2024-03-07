@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import neuprint as neu
 
+from pathlib import Path
+
 from .core import DataSet
 from .scenes import MCNS_MINIMAL_SCENE
 from .utils import (
@@ -53,6 +55,11 @@ class MaleCNS(DataSet):
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
+    cn_object :         str | pd.DataFrame 
+                        Either a DataFrame or path to a `.feather` connectivity file which 
+                        will be loaded into a DataFrame. The DataFrame is expected to 
+                        come from `neuprint.fetch_adjacencies` and include all relevant 
+                        IDs.
 
     """
 
@@ -67,6 +74,7 @@ class MaleCNS(DataSet):
         rois=None,
         meta_source="clio",
         exclude_queries=False,
+        cn_object=None,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
@@ -77,11 +85,22 @@ class MaleCNS(DataSet):
         self.exclude_queries = exclude_queries
         self.backfill_types = backfill_types
         self.meta_source = meta_source
+        self.cn_object = cn_object
 
         if rois is not None:
             self.rois = _parse_neuprint_roi(rois)
         else:
             self.rois = None
+
+        if self.cn_object is not None:
+            if isinstance(self.cn_object, (str, Path)):
+                self.cn_object = Path(self.cn_object).expanduser()
+                if not self.cn_object.is_file():
+                    raise ValueError(f'"{self.cn_object}" is not a valid file')
+                else:
+                    self.cn_object = pd.read_feather(self.cn_object)
+            elif not isinstance(self.cn_object, pd.DataFrame):
+                raise ValueError("`cn_object` must be a path or a DataFrame")
 
     def _add_neurons(self, x, exact=False, right_only=False):
         """Turn `x` into male CNS body IDs."""
@@ -188,9 +207,15 @@ class MaleCNS(DataSet):
         # Fetch hemibrain vectors
         if self.upstream:
             # print("Fetching upstream connectivity... ", end="", flush=True)
-            _, us = neu.fetch_adjacencies(
-                targets=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
-            )
+            if isinstance(self.cn_object, pd.DataFrame):
+                us = self.cn_object[self.cn_object.bodyId_post.isin(x)]
+                if self.rois is not None:
+                    us = us[us.roi.isin(self.rois)]
+                us = us.copy()  # avoid SettingWithCopyWarning
+            else:   
+                _, us = neu.fetch_adjacencies(
+                    targets=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
+                )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
             us.rename(
@@ -208,9 +233,15 @@ class MaleCNS(DataSet):
 
         if self.downstream:
             # print("Fetching downstream connectivity... ", end="", flush=True)
-            _, ds = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
-            )
+            if isinstance(self.cn_object, pd.DataFrame):
+                ds = self.cn_object[self.cn_object.bodyId_pre.isin(x)]
+                if self.rois is not None:
+                    ds = ds[ds.roi.isin(self.rois)]
+                ds = ds.copy()  # avoid SettingWithCopyWarning
+            else:
+                _, ds = neu.fetch_adjacencies(
+                    sources=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
+                )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
             ds.rename(
