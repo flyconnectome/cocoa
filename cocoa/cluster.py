@@ -602,7 +602,7 @@ class Clustering:
 
     @req_compile
     def plot_clustermap(
-        self, x_labels="{label}_{dataset}", y_labels="{id}", fontsize=4
+        self, x_labels="{label}_{dataset}", y_labels="{id}", fontsize=4, **kwargs
     ):
         """Plot connectivity distance as cluster heatmap.
 
@@ -611,9 +611,11 @@ class Clustering:
         x/y_labels :    str
                         Formatting for tick labels on x- and y-axis, respectively.
                         Possible values are "id", "label" and "dataset".
-        fontsize :      int | float
-                        Fontsize for tick labels.
-
+        fontsize :      int | float | None
+                        Fontsize for tick labels. If `None`, will remove labels.
+        **kwargs 
+                        Keyword arguments are passed to seaborn.clustermap
+                        
         Returns
         -------
         cm :            sns.clustermap
@@ -655,23 +657,27 @@ class Clustering:
             col_colors=col_colors,
             row_linkage=Z,
             col_linkage=Z,
+            **kwargs
         )
         ax = cm.ax_heatmap
         ix = cm.dendrogram_row.reordered_ind
         ax.set_xticks(np.arange(len(dists)) + 0.5)
         ax.set_yticks(np.arange(len(dists)) + 0.5)
 
-        xl = [
-            x_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
-            for i in dists.index.values[ix]
-        ]
-        yl = [
-            y_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
-            for i in dists.index.values[ix]
-        ]
-
-        ax.set_xticklabels(xl, fontsize=fontsize)
-        ax.set_yticklabels(yl, fontsize=fontsize)
+        if fontsize is None:
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+        else:
+            xl = [
+                x_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
+                for i in dists.index.values[ix]
+            ]
+            yl = [
+                y_labels.format(dataset=ds_dict[i], label=label_dict[i], id=i)
+                for i in dists.index.values[ix]
+            ]
+            ax.set_xticklabels(xl, fontsize=fontsize)
+            ax.set_yticklabels(yl, fontsize=fontsize)
 
         # Bring back the scale for one of the dendrograms
         ax_d = cm.ax_col_dendrogram
