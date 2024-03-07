@@ -88,7 +88,7 @@ class MaleCNS(DataSet):
         self.cn_object = cn_object
 
         if rois is not None:
-            self.rois = _parse_neuprint_roi(rois)
+            self.rois = _parse_neuprint_roi(rois, client = _get_neuprint_mcns_client())
         else:
             self.rois = None
 
