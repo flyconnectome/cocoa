@@ -14,8 +14,8 @@ from pathlib import Path
 
 
 CACHE_DIR = "~/.cocoa/cache/"
-FLYWIRE_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file1_annotations.tsv"
-HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file4_hemibrain_meta.csv"
+FLYWIRE_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file1_neuron_annotations.tsv"
+HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file5_hemibrain_meta.csv"
 ANNOT_REPO_URL = "https://api.github.com/repos/flyconnectome/flywire_annotations"
 
 
