@@ -997,7 +997,7 @@ def generate_clustering(
         if split_lr:
             mcns_ann = mcns.get_annotations()
             is_left = np.isin(
-                mcns.neurons, mcns_ann[mcns_ann.side == "left"].root_id.astype(int)
+                mcns.neurons, mcns_ann[mcns_ann.soma_side == "left"].bodyid.astype(int)
             )
             mcns_left = MaleCNS(
                 upstream=upstream, downstream=downstream, label="McnsL"
