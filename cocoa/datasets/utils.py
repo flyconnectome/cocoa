@@ -264,7 +264,8 @@ def _get_mcns_meta(source):
                     "Roughly traced",
                     "Prelim Roughly traced",
                     "Anchor",
-                )
+                ),
+                client=client
             ),
             client=client,
         )[0]

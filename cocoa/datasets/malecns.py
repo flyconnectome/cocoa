@@ -214,7 +214,7 @@ class MaleCNS(DataSet):
                 us = us.copy()  # avoid SettingWithCopyWarning
             else:   
                 _, us = neu.fetch_adjacencies(
-                    targets=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
+                    targets=neu.NeuronCriteria(bodyId=x, client=client), rois=self.rois, client=client
                 )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
@@ -240,7 +240,7 @@ class MaleCNS(DataSet):
                 ds = ds.copy()  # avoid SettingWithCopyWarning
             else:
                 _, ds = neu.fetch_adjacencies(
-                    sources=neu.NeuronCriteria(bodyId=x), rois=self.rois, client=client
+                    sources=neu.NeuronCriteria(bodyId=x, client=client), rois=self.rois, client=client
                 )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]

@@ -178,7 +178,7 @@ class Hemibrain(DataSet):
         # Fetch hemibrain vectors
         if self.upstream:
             _, us = neu.fetch_adjacencies(
-                targets=neu.NeuronCriteria(bodyId=x), client=client
+                targets=neu.NeuronCriteria(bodyId=x, client=client), client=client
             )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
@@ -196,7 +196,7 @@ class Hemibrain(DataSet):
 
         if self.downstream:
             _, ds = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x), client=client
+                sources=neu.NeuronCriteria(bodyId=x, client=client), client=client
             )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
