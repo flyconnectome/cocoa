@@ -7,7 +7,7 @@ import neuprint as neu
 from pathlib import Path
 
 from .core import DataSet
-from .scenes import MCNS_MINIMAL_SCENE
+from .scenes import _get_mcns_scene
 from .utils import (
     _get_mcns_meta,
     _get_neuprint_mcns_client,
@@ -174,7 +174,7 @@ class MaleCNS(DataSet):
             )
 
         else:
-            scene = copy.deepcopy(MCNS_MINIMAL_SCENE)
+            scene = copy.deepcopy(_get_mcns_scene())
             scene["layers"][0]["source"] = seg_source
         return scene
 
