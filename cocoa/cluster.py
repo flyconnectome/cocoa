@@ -873,11 +873,11 @@ def generate_clustering(
     hb=None,
     mcns=None,
     split_lr=True,
-    live_annot=True,
+    live_annot=False,
     upstream=True,
     downstream=True,
     fw_cn_file=None,
-    fw_materialization=630,
+    fw_materialization=783,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
 
