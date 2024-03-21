@@ -11,8 +11,10 @@ from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
 from fastcluster import linkage
-from scipy.cluster.hierarchy import cut_tree, leaves_list
+from scipy.cluster.hierarchy import cut_tree, leaves_list, dendrogram
 from scipy.spatial.distance import squareform
+from matplotlib.patches import Rectangle
+from matplotlib.collections import PatchCollection
 
 from .datasets import FlyWire, Hemibrain, MaleCNS
 from .datasets.core import DataSet
@@ -596,9 +598,95 @@ class Clustering:
     @req_compile
     def plot_dendrogram(
         self,
+        color_by="dataset",
+        cmap="tab10",
+        ax=None,
+        **kwargs
     ):
-        """Plot dendrogram."""
-        pass
+        """Plot dendrogram.
+        
+        Parameters
+        ----------
+        color_by :      "dataset" | "label" | np.ndarray, optional
+                        How to color the neurons (i.e. leafs in the dendrogram).
+                        If a numpy array must be a list of labels, one for each 
+                        neuron in the same order as in `Clustering.dists_`.
+        cmap :          str | dict 
+                        Colormap to use for coloring neurons. If a dict, must
+                        map `color_by` labels to colors.
+        ax :            matplotlib Ax, optional
+                        If provided, will plot on this axis.
+        **kwargs
+                        Keyword arguments are passed to scipy.dendrogram.
+
+        Returns 
+        -------
+        dn :            dict 
+                        The scipy dendrogram object.
+
+        """
+        dists = self.dists_
+        Z = linkage(
+            squareform(dists.values, checks=False),
+            preserve_input=False,
+            **CLUSTER_DEFAULTS,
+        )
+
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        DN_DEFAULTS = {
+            "no_labels": True,
+            "above_threshold_color": "slategrey",
+            "color_threshold": 0,
+        }
+        DN_DEFAULTS.update(kwargs)
+        dn = dendrogram(Z, ax=ax, **DN_DEFAULTS)
+
+        if color_by is not None:
+            # Parse color_by
+            if color_by == "dataset":
+                labels = self.vect_sources_
+            elif color_by == "label":
+                labels = self.vect_labels_
+            elif isinstance(color_by, (np.ndarray, list)):
+                labels = np.asarray(color_by) 
+            else:
+                raise TypeError(
+                    'Unknown type for `color_by`, must be "dataset", "label" or a list/array of labels'
+                )
+            
+            if len(labels) != len(dists):
+                raise ValueError(
+                    "Length of `color_by` must match the number of neurons."
+                )
+
+            # Parse cmap
+            if isinstance(cmap, str):
+                colors = sns.color_palette(cmap, len(np.unique(labels)))
+                cmap = dict(zip(np.unique(labels), colors))
+            elif isinstance(cmap, dict):
+                miss = set(labels) - set(cmap.keys())
+                if len(miss):
+                    raise ValueError(f"Missing colors for labels: {miss}")
+            else:
+                raise TypeError(f'Unknown type for `cmap`, got "{type(cmap)}"')
+
+            # Get the leaves list 
+            ll = leaves_list(Z)
+            rectangles = []
+
+            # Collect rectangles
+            for i, ix in enumerate(ll):
+                rectangles.append(
+                    Rectangle(xy=(i * 10 + 1, -0.7), width=8, height=0.7, fc=cmap[labels[ix]])
+                )
+            ax.add_collection(PatchCollection(rectangles, match_original=True))
+
+            # Add small padding so we don't cut off the rectangles
+            ax.set_ylim(bottom=-.1)  
+
+        return dn
 
     @req_compile
     def plot_clustermap(
