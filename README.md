@@ -74,3 +74,13 @@ secrets:
 >>> # See also `cl.plot_clustermap` for a quick visualization
 ```
 
+Alternatively, you can also use the `generate_clustering` helper function.
+That may be enough in cases where you don't need fine-grained control.
+
+```Python
+>>> cl = cc.generate_clustering(
+...            fw=['SLP001', 'SLP002'],
+...            hb=['SLP001', 'SLP002']
+...         ).compile()
+```
+
