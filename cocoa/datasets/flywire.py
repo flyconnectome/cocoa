@@ -72,7 +72,7 @@ class FlyWire(DataSet):
         exclude_queries=False,
         cn_file=None,
         live_annot=False,
-        materialization=630,
+        materialization=783,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
