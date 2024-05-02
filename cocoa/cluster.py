@@ -987,6 +987,7 @@ def generate_clustering(
     downstream=True,
     fw_cn_file=None,
     fw_materialization=783,
+    mcns_cn_object=None,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
 
@@ -1099,7 +1100,7 @@ def generate_clustering(
     if mcns is not None:
         # Use the dataset to parse `mcns` into body IDs
         mcns = MaleCNS(
-            upstream=upstream, downstream=downstream, label="McnsL"
+            upstream=upstream, downstream=downstream, label="McnsL", cn_object=mcns_cn_object
         ).add_neurons(mcns)
 
         # Now split into left/right
