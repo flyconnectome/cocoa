@@ -74,6 +74,16 @@ class DataSet(ABC):
         pass
 
     @abstractmethod
+    def get_annotations(self, **kwargs):
+        """Get annotations for neurons."""
+        pass
+
+    @abstractmethod
+    def get_all_neurons(self):
+        """Get all neurons in dataset."""
+        pass
+
+    @abstractmethod
     def compile(self):
         """Compile connectivity vector."""
         pass
