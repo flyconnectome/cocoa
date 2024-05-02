@@ -18,6 +18,7 @@ from matplotlib.collections import PatchCollection
 
 from .datasets import FlyWire, Hemibrain, MaleCNS
 from .datasets.core import DataSet
+from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
 from .utils import make_iterable, req_compile, printv
 from .distance import calculate_distance

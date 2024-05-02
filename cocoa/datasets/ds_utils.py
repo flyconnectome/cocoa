@@ -45,7 +45,7 @@ MCNS_BAD_TYPES = (
     "OL",
     "T",
     "Y",
-    "TuBu"
+    "TuBu",
 )
 
 
@@ -125,17 +125,33 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
         {"root_id": np.int64, "supervoxel_id": np.int64}
     )
 
-    if mat not in ("630", 630, None):
+    col = f"root_{mat}" if mat not in ("live", "current") else "root_id"
+
+    if mat in ("live", "current") or col not in table.columns:
+        if col not in table.columns:
+            table[col] = table.root_id
+
         if mat in ("live", "current"):
             timestamp = None
         else:
             timestamp = f"mat_{mat}"
+
         to_update = ~flywire.is_latest_root(
-            table.root_id, timestamp=timestamp, progress=False
+            table[col], timestamp=timestamp, progress=False
         )
-        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
+
+        table.loc[to_update, col] = flywire.supervoxels_to_roots(
             table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
         )
+
+        # Save the updated root IDs
+        table.to_csv(fp, sep="\t", index=False)
+
+        # Make sure we have a column called `root_id` with the correct values
+        if col != "root_id":
+            table["root_id"] = table[col]
+            table.drop(col, axis=1, inplace=True)
+
     print("Done.")
     return table
 
@@ -258,15 +274,7 @@ def _get_mcns_meta(source):
     else:
         client = _get_neuprint_mcns_client()
         return neu.fetch_neurons(
-            neu.NeuronCriteria(
-                statusLabel=(
-                    "Traced",
-                    "Roughly traced",
-                    "Prelim Roughly traced",
-                    "Anchor",
-                ),
-                client=client
-            ),
+            neu.NeuronCriteria(client=client),
             client=client,
         )[0]
 
@@ -611,8 +619,8 @@ def _parse_neuprint_roi(roi, client):
 
     def collect_primary_rois(hierarchy, rois=[]):
         """Collect primary ROIs from a super-ROI hierarchy."""
-        if hierarchy['name'] in client.primary_rois:
-            rois.append(hierarchy['name'])
+        if hierarchy["name"] in client.primary_rois:
+            rois.append(hierarchy["name"])
 
         for sub in hierarchy.get("children", []):
             _ = collect_primary_rois(sub, rois)

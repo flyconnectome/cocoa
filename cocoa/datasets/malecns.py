@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .core import DataSet
 from .scenes import _get_mcns_scene
-from .utils import (
+from .ds_utils import (
     _get_mcns_meta,
     _get_neuprint_mcns_client,
     _is_int,
@@ -17,6 +17,7 @@ from .utils import (
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
+    MCNS_BAD_TYPES,
 )
 
 __all__ = ["MaleCNS"]

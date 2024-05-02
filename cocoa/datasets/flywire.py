@@ -8,7 +8,7 @@ from fafbseg import flywire
 
 from .core import DataSet
 from .scenes import FLYWIRE_MINIMAL_SCENE, FLYWIRE_FLAT_MINIMAL_SCENE
-from .utils import (
+from .ds_utils import (
     _add_types,
     _get_fw_types,
     _load_live_flywire_annotations,
