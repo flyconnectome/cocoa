@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import neuprint as neu
+import networkx as nx
 
 from .core import DataSet
 from .scenes import HEMIBRAIN_MINIMAL_SCENE
@@ -131,31 +132,90 @@ class Hemibrain(DataSet):
         """Return annotations."""
         return _get_hemibrain_meta(live=self.live_annot)
 
-    def get_labels(self, x):
-        """Fetch labels for given IDs."""
-        if not isinstance(x, (list, np.ndarray)):
-            x = []
-        x = np.asarray(x).astype(np.int64)
+    def get_all_neurons(self):
+        """Get a list of all neurons in this dataset."""
+        return self.get_annotations().bodyId.values
 
+    def get_labels(self, x):
+        """Fetch labels for given IDs.
+
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Body IDs to fetch labels for. If `None`, will return all labels.
+
+        """
         # Fetch all types for this version
         types = _get_hemibrain_types(add_side=False, live=self.live_annot)
 
+        if x is None:
+            return types
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
+
         return np.array([types.get(i, i) for i in x])
 
-
     def label_exists(self, x):
-        """Check if label(s) exists in dataset."""
+        """Check if labels exists in dataset."""
         x = np.asarray(x)
 
-        types = _get_hemibrain_types(add_side=False, live=self.live_annot)
-        morph_types = _get_hemibrain_types(
-            add_side=False, use_morphology_type=True, live=self.live_annot
-        )
-        all_types = np.unique(
-            np.append(list(types.values()), list(morph_types.values()))
-        )
+        # This graph contains all possible labels in this dataset,
+        # including synonyms and split compound types
+        G = self.compile_label_graph(which_neurons="all")
 
-        return np.isin(x, list(all_types))
+        # Remove the neurons themselves
+        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+
+        return np.isin(x, list(G.nodes))
+
+    def compile_label_graph(self, which_neurons="all"):
+        """Compile label graph.
+
+        For the hemibrain, this means:
+         1. Use the `type` primary labels
+         2. Use `morphology_type` as secondary labels (i.e. less granular synonyms)
+
+        Parameters
+        ----------
+        which_neurons : "all" | "self"
+                        Whether to use only the neurons in this
+                        dataset or all neurons in the entire HemiBrain dataset.
+
+        Returns
+        -------
+        G : nx.Graph
+            A graph with neurons and labels as nodes.
+
+        """
+        assert which_neurons in ("self", "all")
+
+        ann = self.get_annotations()
+
+        # Subset to the neurons in this dataset
+        if which_neurons == "self":
+            if not len(self):
+                raise ValueError("No neurons in dataset")
+            ann = ann[ann.bodyId.isin(self.neurons)]
+
+        # Initialise graph
+        G = nx.Graph()
+
+        # Add neuron nodes
+        G.add_nodes_from(ann.bodyId, type='neuron')
+
+        # The hemibrain `type`` is the primary label
+        prim = ann[ann.type.notnull()]
+        G.add_edges_from(zip(prim.bodyId, prim.type))
+
+        # The hemibrain `morphology_type` is the secondary label
+        # (important for mapping to e.g. FlyWire)
+        sec = ann[ann.morphology_type.notnull()]
+        sec = sec[sec.type != sec.morphology_type]
+        G.add_edges_from(zip(sec.type, sec.morphology_type))
+
+        return G
 
     def compile(self):
         """Compile connectivity vector."""

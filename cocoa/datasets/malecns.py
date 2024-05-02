@@ -3,6 +3,7 @@ import copy
 import numpy as np
 import pandas as pd
 import neuprint as neu
+import networkx as nx
 
 from pathlib import Path
 
@@ -146,16 +147,33 @@ class MaleCNS(DataSet):
 
     def get_annotations(self):
         """Return annotations."""
-        return _get_mcns_meta(source=self.meta_source)
+        # Clio returns a "bodyid" column, neuprint a "bodyId" column
+        return _get_mcns_meta(source=self.meta_source).rename(
+            {"bodyid": "bodyId"}, axis=1
+        )
+
+    def get_all_neurons(self):
+        """Get a list of all neurons in this dataset."""
+        return self.get_annotations().bodyId.values
 
     def get_labels(self, x):
-        """Fetch labels for given IDs."""
-        if not isinstance(x, (list, np.ndarray)):
-            x = []
-        x = np.asarray(x).astype(np.int64)
+        """Fetch labels for given IDs.
 
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Body IDs to fetch labels for. If `None`, will return all labels.
+
+        """
         # Fetch all types for this version
         types = _get_mcns_types(add_side=False, source=self.meta_source)
+
+        if x is None:
+            return types
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
 
         return np.array([types.get(i, i) for i in x])
 
@@ -183,10 +201,148 @@ class MaleCNS(DataSet):
         """Check if labels exists in dataset."""
         x = np.asarray(x)
 
-        types = _get_mcns_types(add_side=False, source=self.meta_source)
-        all_types = np.unique(list(types.values()))
+        # This graph contains all possible labels in this dataset,
+        # including synonyms and split compound types
+        G = self.compile_label_graph(which_neurons="all")
 
-        return np.isin(x, list(all_types))
+        # Remove the neurons themselves
+        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+
+        return np.isin(x, list(G.nodes))
+
+    def compile_label_graph(self, which_neurons="all", exclude_bad_types=True):
+        """Compile label graph.
+
+        For the MaleCNS, this means:
+         1. Use the `type` as primary labels backfill with (in order):
+            - `flywire_type`
+            - `group`
+            - `instance`
+         2. Add synonyms for `type` and `flywire_type`
+         3. Split compound `types` and `flywire_types` such that e.g. "PS008,PS009"
+            produces two edges: (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
+
+        Parameters
+        ----------
+        which_neurons : "all" | "self"
+                        Whether to use only the neurons in this
+                        dataset or all neurons in the entire MaleCNS dataset.
+        exclude_bad_types : bool
+                        Whether to exclude known bad types such as "KC" or "FB".
+
+        Returns
+        -------
+        G : nx.Graph
+            A graph with neurons and labels as nodes.
+
+        """
+        assert which_neurons in ("self", "all"), "Invalid `which_neurons`"
+
+        ann = self.get_annotations()
+
+        # Subset to the neurons in this dataset
+        if which_neurons == "self":
+            if not len(self):
+                raise ValueError("No neurons in dataset")
+            ann = ann[ann.bodyId.isin(self.neurons)].copy()
+
+        # Drop some known bad types
+        if exclude_bad_types:
+            ann.loc[ann.type.isin(MCNS_BAD_TYPES), "type"] = None
+
+        if "group" in ann.columns:
+            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
+            # However, that identity neuron often doesn't have the group itself
+            # so we need to manually fix that
+            groups = (
+                ann[ann.group.notnull()]
+                .set_index("bodyId")["group"]
+                .astype(int)
+                .astype(str)
+                .to_dict()
+            )
+            # For each {bodyID: group} also add {group: group}
+            groups.update({v: v for v in groups.values()})
+
+            # Rename groups to "mcns_group_{group}"
+            groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
+
+            ann["group"] = ann.bodyId.map(groups)
+
+        if "instance" in ann.columns:
+            # Instance is a bit of a mixed bag: we can get things like
+            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
+            # which we will ignore for now
+
+            # First get {ID}_L types
+            num_inst = ann.instance.str.extract("^([0-9]+)_[LRM]$")
+            num_inst.columns = ["instance"]
+            num_inst["bodyId"] = ann.bodyId.values
+            num_inst = num_inst[num_inst.instance.notnull()]
+            num_inst = num_inst.set_index("bodyId").instance.to_dict()
+            num_inst.update({v: v for v in num_inst.values()})
+
+            # Rename these ID instances to "mcns_instance_{ID}"
+            num_inst = {k: f"mcns_instance_{v}" for k, v in num_inst.items()}
+
+            ann["instance_clean"] = ann.bodyId.map(num_inst)
+
+        # Initialise graph
+        G = nx.Graph()
+
+        # Add neuron nodes
+        G.add_nodes_from(ann.bodyId, type="neuron")
+
+        # Add mappings to primary label
+        prim = ann[ann.type.notnull()]
+        G.add_edges_from(zip(prim.bodyId, prim.type))
+
+        # Backfill `type` with `flywire_type` if `type` is missing
+        sec = ann[ann.type.isnull() & ann.flywire_type.notnull()]
+        G.add_edges_from(zip(sec.bodyId, sec.flywire_type))
+
+        # Add mappings to tertiary and quaternary labels
+        if "group" in ann.columns:
+            tert = ann[
+                ~ann.bodyId.isin(prim.bodyId)
+                & ~ann.bodyId.isin(sec.bodyId)
+                & ann.group.notnull()
+            ]
+            G.add_edges_from(zip(tert.bodyId, tert.group))
+        else:
+            tert = ann.iloc[0:0]
+
+        if "instance_clean" in ann.columns:
+            quart = ann[
+                ~ann.bodyId.isin(prim.bodyId)
+                & ~ann.bodyId.isin(sec.bodyId)
+                & ~ann.bodyId.isin(tert.bodyId)
+                & ann.instance_clean.notnull()
+            ]
+            G.add_edges_from(zip(quart.bodyId, quart.instance_clean))
+
+        # Add synonyms:
+        syn = ann.loc[
+            ann.type.notnull() & ann.flywire_type.notnull(),
+            ["type", "flywire_type"],
+        ].drop_duplicates()
+        syn = syn[syn.type != syn.flywire_type]
+        G.add_edges_from(zip(syn.type, syn.flywire_type))
+        # 2. Take care of compound types in both FlyWire and cell type columns (probably the former)
+        comp = np.append(
+            ann[ann.type.str.contains(",", na=False)].type.unique(),
+            ann[ann.flywire_type.str.contains(",", na=False)].flywire_type.unique(),
+        )
+        for c in comp:
+            for c2 in c.split(","):
+                G.add_edge(c.strip(), c2.strip())
+
+        # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
+        # we will use the node properties to indicate which datasets it must not be matched against.
+        # For example:
+        # G.nodes['node']['antonyms_in'] = ("MCNS")
+
+        return G
 
     def compile(self):
         """Compile connectivity vector."""

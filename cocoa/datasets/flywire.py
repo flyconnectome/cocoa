@@ -2,6 +2,7 @@ import copy
 
 import numpy as np
 import pandas as pd
+import networkx as nx
 
 from pathlib import Path
 from fafbseg import flywire
@@ -166,13 +167,26 @@ class FlyWire(DataSet):
         else:
             return _load_static_flywire_annotations(mat=self.materialization)
 
-    def get_labels(self, x, verbose=False):
-        """Fetch labels for given IDs."""
-        if not isinstance(x, (list, np.ndarray)):
-            x = []
-        x = np.asarray(x).astype(np.int64)
+    def get_all_neurons(self):
+        """Get a list of all neurons in this dataset."""
+        return self.get_annotations().root_id.values
 
+    def get_labels(self, x):
+        """Fetch labels for given IDs.
+
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Root IDs to fetch labels for. If `None`, will return all labels.
+        """
         types = _get_fw_types(live=self.live_annot, mat=self.materialization)
+
+        if x is None:
+            return types
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
 
         return np.array([types.get(i, i) for i in x])
 
@@ -195,16 +209,90 @@ class FlyWire(DataSet):
         """Check if labels exists in dataset."""
         x = np.asarray(x)
 
-        types = _get_fw_types(live=self.live_annot, mat=self.materialization)
+        # This graph contains all possible labels in this dataset,
+        # including synonyms and split compound types
+        G = self.compile_label_graph(which_neurons="all")
 
-        all_types = np.unique(list(types.values()))
-        all_types = np.append(
-            all_types, np.unique([l for t in all_types for l in t.split(",")])
+        # Remove the neurons themselves
+        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+
+        return np.isin(x, list(G.nodes))
+
+    # Should this be cached and/or turned into a classmethod?
+    def compile_label_graph(self, which_neurons="all"):
+        """Compile label graph.
+
+        For FlyWire, this means:
+         1. Use the `cell_type` back-filled with the `hemibrain_type` as primary labels
+         2. Use `hemibrain_type` as secondary labels (i.e. synonyms)
+         3. Split hemibrain compound types such that e.g. "PS008,PS009"
+            produces two edges: (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
+
+        Parameters
+        ----------
+        which_neurons : "all" | "self"
+                        Whether to use only the neurons in this
+                        dataset or all neurons in the entire FlyWire dataset.
+
+        Returns
+        -------
+        G : nx.Graph
+            A graph with neurons and labels as nodes.
+
+        """
+        assert which_neurons in ("self", "all"), "`which_neurons` must be 'self' or 'all'"
+
+        ann = self.get_annotations()
+
+        # Subset to the neurons in this dataset
+        if which_neurons == "self":
+            if not len(self):
+                raise ValueError("No neurons in dataset")
+            ann = ann[ann.root_id.isin(self.neurons)]
+
+        # Initialise graph
+        G = nx.Graph()
+
+        # Add neuron nodes
+        G.add_nodes_from(ann.root_id, type="neuron")
+
+        # Add mappings to primary label
+        prim = ann[ann.cell_type.notnull()]
+        G.add_edges_from(zip(prim.root_id, prim.cell_type))
+
+        # Add mappings to secondary label
+        sec = ann[ann.cell_type.isnull() & ann.hemibrain_type.notnull()]
+        G.add_edges_from(zip(sec.root_id, sec.hemibrain_type))
+
+        # Add synonyms:
+        # 1. Take care of cases where e.g. cell type is PS008a but the hemibrain type is PS008
+        syn = ann.loc[
+            ann.cell_type.notnull() & ann.hemibrain_type.notnull(),
+            ["cell_type", "hemibrain_type"],
+        ].drop_duplicates()
+        syn = syn[syn.cell_type != syn.hemibrain_type]
+        G.add_edges_from(zip(syn.cell_type, syn.hemibrain_type))
+        # 2. Take care of compound types (both from hemibrain and cell type columns)
+        comp = np.append(
+            # Note: for cell type we sometimes have types like "(M_adPNm4,M_adPNm5)b" which we will ignore here
+            ann[
+                ann.cell_type.str.contains(",", na=False)
+                & ~ann.cell_type.str.startswith("(", na=False)
+            ].cell_type.unique(),
+            ann[ann.hemibrain_type.str.contains(",", na=False)].hemibrain_type.unique(),
         )
+        for c in comp:
+            for c2 in c.split(","):
+                G.add_edge(c.strip(), c2.strip())
 
-        return np.isin(x, list(all_types))
+        # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
+        # we will use the node properties to indicate which datasets it must not be matched against.
+        # For example:
+        # G.nodes['node']['antonyms_in'] = ("MCNS")
 
-    def compile(self):
+        return G
+
+    def compile(self, collapse_types=False):
         """Compile edges."""
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(np.int64)
