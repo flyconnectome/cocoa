@@ -38,6 +38,8 @@ class FlyWire(DataSet):
     use_types :     bool
                     Whether to group by type. This will use `cell_type` first
                     and where that doesn't exist fall back to `hemibrain_type`.
+                    Note that this may be overwritten when used in the context
+                    of a `cocoa.Clustering`.
     use_side  :     bool | 'relative'
                     Only relevant if `group_by_type=True`:
                         - if `True`, will split cell types into left/right/center
@@ -67,7 +69,7 @@ class FlyWire(DataSet):
         label="FlyWire",
         upstream=True,
         downstream=True,
-        use_types=True,
+        use_types=False,
         use_sides=False,
         exclude_queries=False,
         cn_file=None,
@@ -396,6 +398,10 @@ class FlyWire(DataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        # Keep track of whether this used types and side
+        self.edges_types_used_ = self.use_types
+        self.edges_sides_used_ = self.use_sides
 
         # Translate morphology types into connectivity types
         # This makes it easier to align with hemibrain

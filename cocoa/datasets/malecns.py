@@ -37,7 +37,8 @@ class MaleCNS(DataSet):
     up/downstream :     bool
                         Whether to use up- and/or downstream connectivity.
     use_types :         bool
-                        Whether to group by type.
+                        Whether to group by type.  Note that this may be overwritten
+                        when used in the context of a `cocoa.Clustering`.
     backfill_types :    bool
                         If True, will backfill the type with information
                         extracted from other columns such as flywire_type,
@@ -70,7 +71,7 @@ class MaleCNS(DataSet):
         label="maleCNS",
         upstream=True,
         downstream=True,
-        use_types=True,
+        use_types=False,
         backfill_types=False,
         use_sides=False,
         rois=None,
@@ -428,6 +429,10 @@ class MaleCNS(DataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        # Keep track of whether this used types and side
+        self.edges_types_used_ = self.use_types
+        self.edges_sides_used_ = self.use_sides
 
         return self
 

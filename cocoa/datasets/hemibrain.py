@@ -31,7 +31,8 @@ class Hemibrain(DataSet):
                     Whether to use up- and/or downstream connectivity.
     use_types :     bool
                     Whether to group by type. This will use `type`, not
-                    `morphology_type`.
+                    `morphology_type`. Note that this may be overwritten
+                    when used in the context of a `cocoa.Clustering`.
     use_sides :     bool | 'relative'
                     Only relevant if `group_by_type=True`:
                         - if `True`, will split cell types into left/right/center
@@ -57,7 +58,7 @@ class Hemibrain(DataSet):
         label="Hemibrain",
         upstream=True,
         downstream=True,
-        use_types=True,
+        use_types=False,
         use_sides=False,
         exclude_queries=False,
         live_annot=False,
@@ -286,5 +287,9 @@ class Hemibrain(DataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        # Keep track of whether this used types and side
+        self.edges_types_used_ = self.use_types
+        self.edges_sides_used_ = self.use_sides
 
         return self

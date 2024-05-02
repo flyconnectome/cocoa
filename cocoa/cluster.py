@@ -22,6 +22,7 @@ from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
 from .utils import make_iterable, req_compile, printv
 from .distance import calculate_distance
+from .mappers import GraphMapper, SimpleMapper, BaseMapper
 
 """
 Code Example:
@@ -190,6 +191,7 @@ class Clustering:
         self,
         join="existing",
         metric="cosine",
+        mapper=GraphMapper,
         force_recompile=False,
         exclude_labels=None,
         include_labels=None,
@@ -211,6 +213,10 @@ class Clustering:
                       - "outer" will use all available labels
         metric :    "cosine" | "Euclidean"
                     Metric to use for distance calculations.
+        mapper :    cocoa.Mapper
+                    The mapper used to match neuron labels across datasets.
+                    Examples are `cocoa.GraphMapper` and `cocoa.SimpleMapper`.
+                    See the mapper's documentation for more information.
         exclude_labels : str | list of str, optional
                     If provided will exclude given labels from the observation
                     vector. This uses regex!
@@ -242,70 +248,84 @@ class Clustering:
         if not isinstance(augment, (pd.DataFrame, type(None))):
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
+        if not issubclass(mapper, BaseMapper):
+            raise TypeError(f'`mapper` must be a Mapper, got "{type(mapper)}"')
+
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
             print("Warning: Looks the clustering contains non-unique IDs!")
 
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
-            if not hasattr(ds, "edges_") or force_recompile:
+            # Recompile if (a) not yet compiled, (b) forced or (c) the current edge list contains types
+            if not hasattr(ds, "edges_") or force_recompile or getattr(ds, "edges_types_used_", False):
                 printv(
                     f'Compiling connectivity vector for "{ds.label}" '
                     f"({ds.type}) [{i+1}/{len(self.datasets)}]",
                     verbose=verbose,
                 )
+                _ot = ds.use_types
+                ds.use_types = False
                 ds.compile()
+                ds.use_types = _ot
 
-        # Extract labels
-        all_labels = set()
+        # Generate the mappings
+        if isinstance(mapper, type):
+            mapper = mapper()
+        self.mapper_ = mapper
+        mappings = self.mapper_.build_mapping(*self.datasets, verbose=verbose)
+
+        # Apply the mappings to the individual datasets
         for ds in self.datasets:
-            up = ds.edges_.loc[ds.edges_.post.isin(ds.neurons)]
-            down = ds.edges_.loc[ds.edges_.pre.isin(ds.neurons)]
-            all_labels |= set(up.pre.values.astype(str))
-            all_labels |= set(down.post.values.astype(str))
+            up = ds.edges_.loc[ds.edges_.post.isin(ds.neurons)].copy()
+            down = ds.edges_.loc[ds.edges_.pre.isin(ds.neurons)].copy()
 
-        # Find any cell types we need to collapse
-        collapse_types = {
-            c: cc for cc in list(all_labels) for c in cc.split(",") if ("," in cc)
-        }
-        for ds in self.datasets:
-            edges = ds.edges_.copy()
-            if len(collapse_types):
-                is_up = edges.post.isin(ds.neurons)
-                is_down = edges.pre.isin(ds.neurons)
-                edges.loc[is_up, "pre"] = edges.loc[is_up, "pre"].map(
-                    lambda x: collapse_types.get(x, x)
-                )
-                edges.loc[is_down, "post"] = edges.loc[is_down, "post"].map(
-                    lambda x: collapse_types.get(x, x)
-                )
+            up = _add_types(
+                up,
+                types=mappings,
+                col="pre",
+                sides=None,
+                sides_rel=False,
+            )
 
-                ds.edges_proc_ = edges.groupby(
-                    ["pre", "post"], as_index=False
-                ).weight.sum()
-            else:
-                ds.edges_proc_ = edges
+            down = _add_types(
+                down,
+                types=mappings,
+                col="post",
+                sides=None,
+                sides_rel=False,
+            )
+
+            ds.edges_proc_ = pd.concat(
+                (
+                    up.groupby(["pre", "post"], as_index=False).weight.sum(),
+                    down.groupby(["pre", "post"], as_index=False).weight.sum(),
+                ),
+                axis=0,
+            ).drop_duplicates()
 
         # Find labels that exist in all datasets
         if join == "inner":
-            to_use = set(self.datasets[0].edges_.pre.unique().tolist()) | set(
-                self.datasets[0].edges_.post.unique().tolist()
+            to_use = set(self.datasets[0].edges_proc_.pre.unique().tolist()) | set(
+                self.datasets[0].edges_proc_.post.unique().tolist()
             )
             for ds in self.datasets[1:]:
                 to_use = to_use & (
-                    set(ds.edges_.pre.unique().tolist())
-                    | set(ds.edges_.post.unique().tolist())
+                    set(ds.edges_proc_.pre.unique().tolist())
+                    | set(ds.edges_proc_.post.unique().tolist())
                 )
             to_use = list(to_use)
         elif join in ("outer", "existing"):
             # Get all labels
-            to_use = set(self.datasets[0].edges_.pre.unique().tolist()) | set(
-                self.datasets[0].edges_.post.unique().tolist()
+            to_use = set(self.datasets[0].edges_proc_.pre.unique().tolist()) | set(
+                self.datasets[0].edges_proc_.post.unique().tolist()
             )
             for ds in self.datasets[1:]:
-                to_use = to_use | set(ds.edges_.pre.unique().tolist())
-                to_use = to_use | set(ds.edges_.post.unique().tolist())
+                to_use = to_use | set(ds.edges_proc_.pre.unique().tolist())
+                to_use = to_use | set(ds.edges_proc_.post.unique().tolist())
             to_use = list(to_use)
+            # For each label check if it exists "in theory" in all datasets
+            # even if it's not present in the connectivity vectors
             if join == "existing":
                 exists = np.ones(len(to_use), dtype=bool)
                 for ds in self.datasets:
