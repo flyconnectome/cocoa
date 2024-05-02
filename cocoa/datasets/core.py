@@ -12,6 +12,9 @@ class DataSet(ABC):
         self.label = label
         self.neurons = np.zeros((0,), dtype=np.int64)
 
+    def __len__(self):
+        return len(self.neurons)
+
     def __repr__(self):
         return f"class {self.type} <label={self.label};neurons={len(self.neurons)}>"
 
