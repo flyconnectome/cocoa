@@ -47,6 +47,17 @@ MCNS_BAD_TYPES = (
     "Y",
     "TuBu",
 )
+FLYWIRE_LIVE_COLUMNS = [
+    "root_id",
+    "supervoxel_id",
+    "super_class",
+    "cell_class",
+    "cell_type",
+    "hemibrain_type",
+    "malecns_type",
+    "ito_lee_hemilineage",
+    "side",
+]
 
 
 def download_cache_file(url, force_reload="auto", verbose=True):
@@ -164,21 +175,13 @@ def _load_live_flywire_annotations(mat=None):
         end="",
         flush=True,
     )
-
-    cols = [
-        "root_id",
-        "supervoxel_id",
-        "super_class",
-        "cell_class",
-        "cell_type",
-        "hemibrain_type",
-        "ito_lee_hemilineage",
-        "side",
-    ]
     info = _get_table(which="info")
     optic = _get_table(which="optic")
     table = pd.concat(
-        (info.loc[info.flow.notnull(), cols], optic.loc[optic.flow.notnull(), cols]),
+        (
+            info.loc[info.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+            optic.loc[optic.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+        ),
         axis=0,
     ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
 
