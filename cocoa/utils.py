@@ -71,13 +71,13 @@ def collapse_neuron_nodes(G):
 
     Parameters
     ----------
-    G : nx.Graph
+    G : networkx Graph
         Graph with nodes representing neurons and labels. Neuron nodes must
         have a 'type' attribute.
 
     Returns
     -------
-    G_grp : nx.Graph
+    G_grp : nx.DiGraph
         Graph with neuron nodes collapsed into groups.
 
     """
@@ -89,18 +89,47 @@ def collapse_neuron_nodes(G):
     node_edges = edges[
         edges.source.isin([k for k, v in types.items() if v == "neuron"])
     ].copy()
-    # Pivot
-    adj = (
-        node_edges.pivot(index="source", columns="target", values="weight")
-        .fillna(0)
-        .astype(bool)
-    )
-    # Collapse - this is now a tuple of (id1, id2, ...) for each group
-    to_collapse = (
-        adj.groupby(list(adj))
-        .apply(lambda x: tuple(x.index), include_groups=False)
-        .values
-    )
+
+    # If we have neurons from different datasets, we need to collapse them separately
+    datasets = nx.get_node_attributes(G, "dataset")
+    group2dataset = {}
+    if datasets:
+        to_collapse = []
+        for ds in set(datasets.values()):
+            node_edges_ds = node_edges[
+                node_edges.source.isin([k for k, v in datasets.items() if v == ds])
+            ]
+            adj = (
+                node_edges_ds.pivot(index="source", columns="target", values="weight")
+                .fillna(0)
+                .astype(bool)
+            )
+            this_to_collapse = (
+                adj.groupby(list(adj))
+                .apply(lambda x: tuple(x.index), include_groups=False)
+                .values.tolist()
+            )
+            group2dataset.update(
+                {
+                    f"group_{i+ len(to_collapse)}": ds
+                    for i in range(len(this_to_collapse))
+                }
+            )
+            to_collapse.extend(this_to_collapse)
+    else:
+        # Pivot
+        adj = (
+            node_edges.pivot(index="source", columns="target", values="weight")
+            .fillna(0)
+            .astype(bool)
+        )
+        # Collapse - this is now a tuple of (id1, id2, ...) for each group
+        to_collapse = (
+            adj.groupby(list(adj))
+            .apply(lambda x: tuple(x.index), include_groups=False)
+            .values
+        )
+
     # We could contract nodes in G now but that's painfully slow
     groups = {n: f"group_{i}" for i, group in enumerate(to_collapse) for n in group}
     edges["source_new"] = edges.source.map(lambda x: groups.get(x, x))
@@ -125,5 +154,7 @@ def collapse_neuron_nodes(G):
         for i, group in enumerate(to_collapse)
     }
     nx.set_node_attributes(G_grp, ids, "ids")
+    if group2dataset:
+        nx.set_node_attributes(G_grp, group2dataset, "dataset")
 
     return G_grp
