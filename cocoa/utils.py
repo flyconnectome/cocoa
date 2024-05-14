@@ -3,6 +3,7 @@ import functools
 
 import numpy as np
 import pandas as pd
+import networkx as nx
 
 from collections.abc import Iterable
 
@@ -55,9 +56,74 @@ def make_iterable(x, force_type=None) -> np.ndarray:
 
 def req_compile(func):
     """Check if we need to compile connectivity."""
+
     @functools.wraps(func)
     def inner(*args, **kwargs):
         if not hasattr(args[0], "dists_"):
             args[0].compile()
         return func(*args, **kwargs)
+
     return inner
+
+
+def collapse_neuron_nodes(G):
+    """Collapse nodes representing neurons into groups with the same connectivity.
+
+    Parameters
+    ----------
+    G : nx.Graph
+        Graph with nodes representing neurons and labels. Neuron nodes must
+        have a 'type' attribute.
+
+    Returns
+    -------
+    G_grp : nx.Graph
+        Graph with neuron nodes collapsed into groups.
+
+    """
+    # Turn into edge list
+    edges = nx.to_pandas_edgelist(G)
+    edges["weight"] = edges.weight.fillna(1).astype(int)
+    # Get edges from neurons to labels
+    types = nx.get_node_attributes(G, "type")
+    node_edges = edges[
+        edges.source.isin([k for k, v in types.items() if v == "neuron"])
+    ].copy()
+    # Pivot
+    adj = (
+        node_edges.pivot(index="source", columns="target", values="weight")
+        .fillna(0)
+        .astype(bool)
+    )
+    # Collapse - this is now a tuple of (id1, id2, ...) for each group
+    to_collapse = (
+        adj.groupby(list(adj))
+        .apply(lambda x: tuple(x.index), include_groups=False)
+        .values
+    )
+    # We could contract nodes in G now but that's painfully slow
+    groups = {n: f"group_{i}" for i, group in enumerate(to_collapse) for n in group}
+    edges["source_new"] = edges.source.map(lambda x: groups.get(x, x))
+
+    # Group edges
+    edges_grp = edges.groupby(["source_new", "target"], as_index=False).weight.sum()
+
+    # Make collapsed graph
+    G_grp = nx.from_pandas_edgelist(edges_grp, source="source_new", edge_attr=True)
+
+    # Set a bunch of node attributes
+    types = {
+        f"group_{i}": "neuron" for i, group in enumerate(to_collapse) for n in group
+    }
+    nx.set_node_attributes(G_grp, types, "type")
+    sizes = {
+        f"group_{i}": len(group) for i, group in enumerate(to_collapse) for n in group
+    }
+    nx.set_node_attributes(G_grp, sizes, "size")
+    ids = {
+        f"group_{i}": ",".join([str(n) for n in group])
+        for i, group in enumerate(to_collapse)
+    }
+    nx.set_node_attributes(G_grp, ids, "ids")
+
+    return G_grp

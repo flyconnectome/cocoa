@@ -20,6 +20,7 @@ from .ds_utils import (
     _parse_neuprint_roi,
     MCNS_BAD_TYPES,
 )
+from ..utils import collapse_neuron_nodes
 
 __all__ = ["MaleCNS"]
 
@@ -91,7 +92,7 @@ class MaleCNS(DataSet):
         self.cn_object = cn_object
 
         if rois is not None:
-            self.rois = _parse_neuprint_roi(rois, client = _get_neuprint_mcns_client())
+            self.rois = _parse_neuprint_roi(rois, client=_get_neuprint_mcns_client())
         else:
             self.rois = None
 
@@ -149,9 +150,15 @@ class MaleCNS(DataSet):
     def get_annotations(self):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
-        return _get_mcns_meta(source=self.meta_source).rename(
+        ann = _get_mcns_meta(source=self.meta_source).rename(
             {"bodyid": "bodyId"}, axis=1
         )
+
+        # Drop empty strings (from e.g. `type`` column)
+        for c in ann.columns:
+            ann[c] = ann[c].replace("", np.nan)
+
+        return ann
 
     def get_all_neurons(self):
         """Get a list of all neurons in this dataset."""
@@ -207,11 +214,15 @@ class MaleCNS(DataSet):
         G = self.compile_label_graph(which_neurons="all")
 
         # Remove the neurons themselves
-        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+        G.remove_nodes_from(
+            [k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"]
+        )
 
         return np.isin(x, list(G.nodes))
 
-    def compile_label_graph(self, which_neurons="all", exclude_bad_types=True):
+    def compile_label_graph(
+        self, which_neurons="all", exclude_bad_types=True, collapse_neurons=False
+    ):
         """Compile label graph.
 
         For the MaleCNS, this means:
@@ -226,15 +237,25 @@ class MaleCNS(DataSet):
         Parameters
         ----------
         which_neurons : "all" | "self"
-                        Whether to use only the neurons in this
-                        dataset or all neurons in the entire MaleCNS dataset.
+                        Whether to use only the neurons in this dataset or all neurons
+                        in the entire MaleCNS dataset (default).
         exclude_bad_types : bool
                         Whether to exclude known bad types such as "KC" or "FB".
+        collapse_neurons : bool
+                        If True, will collapse neurons with the same connectivity into
+                        a single node. Useful for e.g. visualization.
 
         Returns
         -------
         G : nx.Graph
             A graph with neurons and labels as nodes.
+
+        Examples
+        --------
+        >>> import cocoa as cc
+        >>> import networkx as nx
+        >>> G = cc.MaleCNS().compile_label_graph()
+        >>> nx.write_gml(G, "MCNS_label_graph.gml", stringizer=str)
 
         """
         assert which_neurons in ("self", "all"), "Invalid `which_neurons`"
@@ -323,25 +344,29 @@ class MaleCNS(DataSet):
             G.add_edges_from(zip(quart.bodyId, quart.instance_clean))
 
         # Add synonyms:
-        syn = ann.loc[
-            ann.type.notnull() & ann.flywire_type.notnull(),
-            ["type", "flywire_type"],
-        ].drop_duplicates()
+        syn = (
+            ann.loc[ann.type.notnull() & ann.flywire_type.notnull(),]
+            .groupby(["type", "flywire_type"], as_index=False)
+            .size()
+        )
         syn = syn[syn.type != syn.flywire_type]
-        G.add_edges_from(zip(syn.type, syn.flywire_type))
+        G.add_weighted_edges_from(zip(syn.type, syn.flywire_type, syn["size"]))
         # 2. Take care of compound types in both FlyWire and cell type columns (probably the former)
         comp = np.append(
-            ann[ann.type.str.contains(",", na=False)].type.unique(),
-            ann[ann.flywire_type.str.contains(",", na=False)].flywire_type.unique(),
+            ann[ann.type.str.contains(",", na=False)].type.values,
+            ann[ann.flywire_type.str.contains(",", na=False)].flywire_type.values,
         )
-        for c in comp:
+        for c, count in zip(*np.unique(comp, return_counts=True)):
             for c2 in c.split(","):
-                G.add_edge(c.strip(), c2.strip())
+                G.add_edge(c.strip(), c2.strip(), weight=count)
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
         # For example:
         # G.nodes['node']['antonyms_in'] = ("MCNS")
+
+        if collapse_neurons:
+            G = collapse_neuron_nodes(G)
 
         return G
 

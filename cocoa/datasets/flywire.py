@@ -17,6 +17,7 @@ from .ds_utils import (
     _get_fw_sides,
     _is_int,
 )
+from ..utils import collapse_neuron_nodes
 
 __all__ = ["FlyWire"]
 
@@ -100,9 +101,11 @@ class FlyWire(DataSet):
                         f"initialized with `materialization={self.materialization}`"
                     )
             except ValueError:
-                print("Unable to parse materialization from filename. Please make "
-                      "sure the connectivity represents materialization version "
-                      f"'{self.materialization}'.")
+                print(
+                    "Unable to parse materialization from filename. Please make "
+                    "sure the connectivity represents materialization version "
+                    f"'{self.materialization}'."
+                )
 
     def _add_neurons(self, x, exact=True, sides=None):
         """Turn `x` into FlyWire root IDs."""
@@ -221,7 +224,7 @@ class FlyWire(DataSet):
         return np.isin(x, list(G.nodes))
 
     # Should this be cached and/or turned into a classmethod?
-    def compile_label_graph(self, which_neurons="all"):
+    def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
         """Compile label graph.
 
         For FlyWire, this means:
@@ -235,6 +238,9 @@ class FlyWire(DataSet):
         which_neurons : "all" | "self"
                         Whether to use only the neurons in this
                         dataset or all neurons in the entire FlyWire dataset.
+        collapse_neurons : bool
+                        If True, will collapse neurons with the same connectivity into
+                        a single node. Useful for e.g. visualization.
 
         Returns
         -------
@@ -258,39 +264,58 @@ class FlyWire(DataSet):
         # Add neuron nodes
         G.add_nodes_from(ann.root_id, type="neuron")
 
-        # Add mappings to primary label
-        prim = ann[ann.cell_type.notnull()]
-        G.add_edges_from(zip(prim.root_id, prim.cell_type))
-
-        # Add mappings to secondary label
-        sec = ann[ann.cell_type.isnull() & ann.hemibrain_type.notnull()]
-        G.add_edges_from(zip(sec.root_id, sec.hemibrain_type))
+        # Order of labels
+        order = ['malecns_type', 'cell_type', 'hemibrain_type']
+        remaining = ann
+        for col in order:
+            if col not in remaining.columns:
+                continue
+            # Get entries where this column is not null
+            this = remaining[remaining[col].notnull()]
+            # Add edges
+            G.add_edges_from(zip(this.root_id, this[col]))
+            # Remove these entries from the remaining labels
+            remaining = remaining[remaining[col].isnull()]
 
         # Add synonyms:
-        # 1. Take care of cases where e.g. cell type is PS008a but the hemibrain type is PS008
-        syn = ann.loc[
-            ann.cell_type.notnull() & ann.hemibrain_type.notnull(),
-            ["cell_type", "hemibrain_type"],
-        ].drop_duplicates()
+        # 1. Take care of cases where the mcns_type is different from the cell type
+        syn = (
+            ann.loc[ann.cell_type.notnull() & ann.malecns_type.notnull(),]
+            .groupby(["malecns_type", "cell_type"], as_index=False)
+            .size()
+        )
+        syn = syn[syn.malecns_type != syn.cell_type]
+        G.add_weighted_edges_from(zip(syn.malecns_type, syn.cell_type, syn["size"]))
+
+        # 2. Take care of cases where e.g. cell type is PS008a but the hemibrain type is PS008
+        syn = (
+            ann.loc[ann.cell_type.notnull() & ann.hemibrain_type.notnull(),]
+            .groupby(["cell_type", "hemibrain_type"], as_index=False)
+            .size()
+        )
         syn = syn[syn.cell_type != syn.hemibrain_type]
-        G.add_edges_from(zip(syn.cell_type, syn.hemibrain_type))
+        G.add_weighted_edges_from(zip(syn.cell_type, syn.hemibrain_type, syn["size"]))
+
         # 2. Take care of compound types (both from hemibrain and cell type columns)
         comp = np.append(
             # Note: for cell type we sometimes have types like "(M_adPNm4,M_adPNm5)b" which we will ignore here
             ann[
                 ann.cell_type.str.contains(",", na=False)
                 & ~ann.cell_type.str.startswith("(", na=False)
-            ].cell_type.unique(),
-            ann[ann.hemibrain_type.str.contains(",", na=False)].hemibrain_type.unique(),
+            ].cell_type.values,
+            ann[ann.hemibrain_type.str.contains(",", na=False)].hemibrain_type.values,
         )
-        for c in comp:
+        for c, count in zip(*np.unique(comp, return_counts=True)):
             for c2 in c.split(","):
-                G.add_edge(c.strip(), c2.strip())
+                G.add_edge(c.strip(), c2.strip(), weight=count)
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
         # For example:
         # G.nodes['node']['antonyms_in'] = ("MCNS")
+
+        if collapse_neurons:
+            G = collapse_neuron_nodes(G)
 
         return G
 

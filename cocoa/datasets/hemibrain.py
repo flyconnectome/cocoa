@@ -13,6 +13,7 @@ from .ds_utils import (
     _get_hb_sides,
     _add_types,
 )
+from ..utils import collapse_neuron_nodes
 
 __all__ = ["Hemibrain"]
 
@@ -167,11 +168,13 @@ class Hemibrain(DataSet):
         G = self.compile_label_graph(which_neurons="all")
 
         # Remove the neurons themselves
-        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+        G.remove_nodes_from(
+            [k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"]
+        )
 
         return np.isin(x, list(G.nodes))
 
-    def compile_label_graph(self, which_neurons="all"):
+    def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
         """Compile label graph.
 
         For the hemibrain, this means:
@@ -182,7 +185,10 @@ class Hemibrain(DataSet):
         ----------
         which_neurons : "all" | "self"
                         Whether to use only the neurons in this
-                        dataset or all neurons in the entire HemiBrain dataset.
+                        dataset or all neurons in the entire hemibrain dataset.
+        collapse_neurons : bool
+                        If True, will collapse neurons with the same connectivity into
+                        a single node. Useful for e.g. visualization.
 
         Returns
         -------
@@ -204,7 +210,7 @@ class Hemibrain(DataSet):
         G = nx.Graph()
 
         # Add neuron nodes
-        G.add_nodes_from(ann.bodyId, type='neuron')
+        G.add_nodes_from(ann.bodyId, type="neuron")
 
         # The hemibrain `type`` is the primary label
         prim = ann[ann.type.notnull()]
@@ -214,7 +220,11 @@ class Hemibrain(DataSet):
         # (important for mapping to e.g. FlyWire)
         sec = ann[ann.morphology_type.notnull()]
         sec = sec[sec.type != sec.morphology_type]
-        G.add_edges_from(zip(sec.type, sec.morphology_type))
+        sec = sec.groupby(["type", "morphology_type"], as_index=False).size()
+        G.add_weighted_edges_from(zip(sec.type, sec.morphology_type, sec['size']))
+
+        if collapse_neurons:
+            G = collapse_neuron_nodes(G)
 
         return G
 
