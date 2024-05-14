@@ -48,6 +48,7 @@ MCNS_BAD_TYPES = (
     "TuBu",
 )
 FLYWIRE_LIVE_COLUMNS = [
+    "flow",
     "root_id",
     "supervoxel_id",
     "super_class",
@@ -57,6 +58,7 @@ FLYWIRE_LIVE_COLUMNS = [
     "malecns_type",
     "ito_lee_hemilineage",
     "side",
+    "status"
 ]
 
 
@@ -184,6 +186,12 @@ def _load_live_flywire_annotations(mat=None):
         ),
         axis=0,
     ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
+
+    # Keep only neurons
+    table = table[table.flow.notnull()]
+
+    # Drop duplicates
+    table = table[~table.status.isin(['duplicate', 'bad_nucleus'])].copy()
 
     if mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
