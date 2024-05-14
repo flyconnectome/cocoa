@@ -192,7 +192,7 @@ class Hemibrain(DataSet):
 
         Returns
         -------
-        G : nx.Graph
+        G : nx.DiGraph
             A graph with neurons and labels as nodes.
 
         """
@@ -207,7 +207,7 @@ class Hemibrain(DataSet):
             ann = ann[ann.bodyId.isin(self.neurons)]
 
         # Initialise graph
-        G = nx.Graph()
+        G = nx.DiGraph()
 
         # Add neuron nodes
         G.add_nodes_from(ann.bodyId, type="neuron")

@@ -244,7 +244,7 @@ class FlyWire(DataSet):
 
         Returns
         -------
-        G : nx.Graph
+        G : nx.DiGraph
             A graph with neurons and labels as nodes.
 
         """
@@ -259,7 +259,7 @@ class FlyWire(DataSet):
             ann = ann[ann.root_id.isin(self.neurons)]
 
         # Initialise graph
-        G = nx.Graph()
+        G = nx.DiGraph()
 
         # Add neuron nodes
         G.add_nodes_from(ann.root_id, type="neuron")

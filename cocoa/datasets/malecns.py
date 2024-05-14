@@ -247,7 +247,7 @@ class MaleCNS(DataSet):
 
         Returns
         -------
-        G : nx.Graph
+        G : nx.DiGraph
             A graph with neurons and labels as nodes.
 
         Examples
@@ -310,7 +310,7 @@ class MaleCNS(DataSet):
             ann["instance_clean"] = ann.bodyId.map(num_inst)
 
         # Initialise graph
-        G = nx.Graph()
+        G = nx.DiGraph()
 
         # Add neuron nodes
         G.add_nodes_from(ann.bodyId, type="neuron")
