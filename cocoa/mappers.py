@@ -225,6 +225,10 @@ class GraphMapper(BaseMapper):
     See their `.compile_label_graph()` methods for more information.
 
     """
+    _graphs = {}
+
+    # TODOs:
+    # - use direct mappings where available (e.g. the "hb123456" hemibrain types in FlyWire)
 
     def build_mapping(self, *datasets, force_rebuild=False, verbose=True):
         """Build mappings between datasets.
@@ -299,12 +303,23 @@ class GraphMapper(BaseMapper):
         for ds in datasets:
             G = ds.compile_label_graph(which_neurons="all")
             # Here we set e.g. "FWR=True" so we can later identify which dataset(s)
-            # a node belongs to
+            # a node belongs to (can be multiple!)
             nx.set_node_attributes(G, True, ds.label)
+            # Also set a normal node attribute for the neurons in this dataset
+            # (this is mainly for convenience when inspecting the graph)
+            nx.set_node_attributes(G, {n: ds.label for n in G.nodes if G.nodes[n].get('type', None) == 'neuron'}, name='dataset')
             graphs.append(G)
 
         # Combine graphs
         G = nx.compose_all(graphs)
+
+        # Update edge weights
+        weights = nx.get_edge_attributes(graphs[0], "weight")
+        for G2 in graphs[1:]:
+            weights2 = nx.get_edge_attributes(G2, "weight")
+            for n, w in weights2.items():
+                weights[n] = weights.get(n, 0) + w
+        nx.set_edge_attributes(G, weights, "weight")
 
         # Remove "neurons" from the graph, so that we only have "label" nodes
         G_labels = G.copy()
@@ -358,18 +373,17 @@ class GraphMapper(BaseMapper):
 
         # Generate mappings between labels
         mappings_labels = {}
-        for ccn in nx.connected_components(G_trimmed):
+        for ccn in nx.connected_components(G_trimmed.to_undirected()):
+
             # Note to future self:
             # We should probably introduce some weight metric when finding the paths earlier
             # Then we could use the weights within the connected component to suss out potential
             # pathological cases - i.e. where a single weight-1 edge connects two otherwise strongly
             # connected subgraphs within this connecte component.
 
-            # Now we have to make sure this connected component is actually
-            # connected to all datasets
-            if not all(
-                G_trimmed.nodes[n].get(ds.label, False) for ds in datasets for n in ccn
-            ):
+            # Now we have to make sure this connected component is actually connected to all datasets
+            missing = {ds for ds in datasets if not any(G.nodes[n].get(ds.label, False) for n in ccn)}
+            if any(missing):
                 continue
 
             # Make a new label for this connected component
@@ -392,6 +406,9 @@ class GraphMapper(BaseMapper):
         printv("Done.", verbose=verbose, flush=True)
 
         self._mappings[ds_identifier] = mappings
+
+        # Keep a version of the graph for later inspection
+        self._graphs[ds_identifier] = G.subgraph(keep | set(mappings.keys()))
 
         return self._mappings[ds_identifier]
 
