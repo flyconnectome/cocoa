@@ -1015,6 +1015,11 @@ def generate_clustering(
     fw_materialization : int
                 Materialization to use for FlyWire. Must match `fw_cn_file` if
                 that is provided.
+    mcns_cn_object : str | pd.DataFrame
+                Either a DataFrame or path to a `.feather` connectivity file which
+                will be loaded into a DataFrame. The DataFrame is expected to
+                come from `neuprint.fetch_adjacencies` and include all relevant
+                IDs.
 
     """
     datasets = []
@@ -1100,7 +1105,7 @@ def generate_clustering(
     if mcns is not None:
         # Use the dataset to parse `mcns` into body IDs
         mcns = MaleCNS(
-            upstream=upstream, downstream=downstream, label="McnsL", cn_object=mcns_cn_object
+            upstream=upstream, downstream=downstream, label="Mcns"
         ).add_neurons(mcns)
 
         # Now split into left/right
@@ -1111,10 +1116,10 @@ def generate_clustering(
                 mcns_ann[mcns_ann.soma_side.isin(["left", "L"])].bodyId.astype(int),
             )
             mcns_left = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsL"
+                upstream=upstream, downstream=downstream, label="McnsL", cn_object=mcns_cn_object
             ).add_neurons(np.array(mcns.neurons)[is_left])
             mcns_right = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsR"
+                upstream=upstream, downstream=downstream, label="McnsR", cn_object=mcns_cn_object
             ).add_neurons(np.array(mcns.neurons)[~is_left])
 
             if len(mcns_left.neurons):
