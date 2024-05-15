@@ -91,7 +91,8 @@ class Clustering:
         self.add_dataset(datasets)
 
     def __repr__(self):
-        return f"Clustering <datasets={len(self.datasets)}>"
+        n_neurons = sum(len(ds.neurons) for ds in self.datasets)
+        return f"Clustering <datasets={len(self.datasets)};neurons={n_neurons}>"
 
     def __len__(self):
         """The number of datasets in the Clustering."""
@@ -424,7 +425,8 @@ class Clustering:
 
         # Calculate distances
         self.dists_ = calculate_distance(
-            self.vect_, augment=augment, metric=metric, verbose=verbose
+            self.vect_, augment=augment, metric=metric, verbose=verbose,
+            n_batches = self.vect_.shape[0] // 100000 + 1  # Start batching after 100k neurons
         )
         self.dists_.columns = [
             f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
