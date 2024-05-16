@@ -273,7 +273,7 @@ def _get_hemibrain_meta(live=False):
         meta = _load_live_hemibrain_annotations()
     else:
         meta = _load_static_hemibrain_annotations()
-    return meta
+    return meta.astype({"bodyId": np.int64})
 
 
 @lru_cache
