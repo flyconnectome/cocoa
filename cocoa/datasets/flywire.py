@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 
+from functools import lru_cache
 from pathlib import Path
 from fafbseg import flywire
 
@@ -23,6 +24,34 @@ __all__ = ["FlyWire"]
 
 itable = None
 otable = None
+
+
+@lru_cache
+def check_filename_mat(mat, filename):
+    """Check if connectivity file name matches expected materialization.
+
+    We're caching this to avoid multiple checks (and potential warnings) on the same file.
+
+    """
+    filename = Path(filename).name
+
+    if f"mat{mat}" in filename:
+        return
+
+    try:
+        file_mat = int(str(filename).split("_")[-1].split(".")[0])
+        if file_mat != str(mat):
+            raise ValueError(
+                "Connectivity file name suggests it is from "
+                f"materialization {file_mat} but dataset was "
+                f"initialized with `materialization={mat}`"
+            )
+    except ValueError:
+        print(
+            "Unable to parse materialization from filename. Please make "
+            f"sure the connectivity in '{filename}' represents materialization version "
+            f"'{mat}'."
+        )
 
 
 class FlyWire(DataSet):
