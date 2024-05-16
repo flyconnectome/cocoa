@@ -7,7 +7,6 @@ import seaborn as sns
 import matplotlib.colors as mcl
 import matplotlib.pyplot as plt
 
-from functools import lru_cache
 from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
@@ -190,7 +189,6 @@ class Clustering:
         results["n_syn"] = results.label.map(n_syn)
         return results
 
-    @lru_cache(maxsize=1)
     def get_linkage(self, method="ward", preserve_input=True):
         """Calculate and cache linkage matrix for the clustering."""
         # Check if we can re-use a condensed vector-form distance matrix
@@ -452,7 +450,7 @@ class Clustering:
         return self
 
     @req_compile
-    def to_table(self, clusters=None, link_method="ward", orient="neurons"):
+    def to_table(self, clusters=None, link_method="ward", orient="neurons", linkage=None):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
@@ -466,6 +464,9 @@ class Clustering:
                       Determines output:
                         - for "neurons" each row will be a neuron
                         - for "clusters" each row will be a ``cluster``
+        linkage :     np.ndarray, optional
+                      A precomputed linkage matrix. If provided, will use this
+                      instead of calculating a new one.
 
         Returns
         -------
@@ -486,7 +487,10 @@ class Clustering:
             x = 1 - x
 
         # Generate linkage and extract order
-        Z = self.get_linkage(method=link_method)
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(method=link_method)
+        else:
+            Z = linkage
         leafs = leaves_list(Z)
 
         # Generate table
@@ -530,7 +534,7 @@ class Clustering:
         return table
 
     @req_compile
-    def extract_clusters(self, N, out="membership", **kwargs):
+    def extract_clusters(self, N, out="membership", linkage=None, **kwargs):
         """Extract clusters.
 
         Parameters
@@ -542,6 +546,9 @@ class Clustering:
                     - `ids` returns lists of neuron IDs
                     - `membership` returns a cluster ID for each neuron
                     - `labels` returns lists of neuron labels
+        linkage : np.ndarray, optional
+                Precomputed linkage matrix. If provided, will use this instead
+                of calculating a new one.
         **kwargs
                 Keyword arguments passed to `linkage()`.
 
@@ -556,7 +563,12 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = self.get_linkage(**defaults)
+
+        # Generate linkage if necessary
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(**defaults)
+        else:
+            Z = linkage
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -577,6 +589,7 @@ class Clustering:
         min_dist=None,
         min_dist_diff=None,
         link_method="ward",
+        linkage=None,
         verbose=False,
     ):
         """Extract homogenous clusters from clustermap or distance matrix.
@@ -599,6 +612,9 @@ class Clustering:
                         which we are allowed to make clusters.
         link_method :   str
                         Method to use for generating the linkage.
+        linkage :       np.ndarray, optional
+                        Precomputed linkage matrix. If provided, will use this
+                        instead of calculating a new one.
 
         Returns
         -------
@@ -617,6 +633,7 @@ class Clustering:
             max_dist=max_dist,
             min_dist=min_dist,
             min_dist_diff=min_dist_diff,
+            linkage=linkage,
             verbose=verbose,
         )
         if out == "membership":
@@ -629,7 +646,7 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def plot_dendrogram(self, color_by="dataset", cmap="tab10", ax=None, **kwargs):
+    def plot_dendrogram(self, color_by="dataset", cmap="tab10", ax=None, linkage=None, **kwargs):
         """Plot dendrogram.
 
         Parameters
@@ -643,6 +660,9 @@ class Clustering:
                         map `color_by` labels to colors.
         ax :            matplotlib Ax, optional
                         If provided, will plot on this axis.
+        linkage :       np.ndarray, optional
+                        Precomputed linkage matrix. If provided, will use this
+                        instead of calculating a new one.
         **kwargs
                         Keyword arguments are passed to scipy.dendrogram.
 
@@ -653,7 +673,12 @@ class Clustering:
 
         """
         dists = self.dists_
-        Z = self.get_linkage(**CLUSTER_DEFAULTS)
+
+        # Generate linkage if necessary
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(**CLUSTER_DEFAULTS)
+        else:
+            Z = linkage
 
         if ax is None:
             fig, ax = plt.subplots()
