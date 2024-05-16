@@ -274,7 +274,9 @@ class Clustering:
         if isinstance(mapper, type):
             mapper = mapper()
         self.mapper_ = mapper
-        mappings = self.mapper_.build_mapping(*self.datasets, verbose=verbose)
+        self.mappings_ = self.mapper_.build_mapping(*self.datasets, verbose=verbose)
+
+        printv("Combining connectivity vectors... ", verbose=verbose, end="")
 
         # Apply the mappings to the individual datasets
         for ds in self.datasets:
@@ -283,7 +285,7 @@ class Clustering:
 
             up = _add_types(
                 up,
-                types=mappings,
+                types=self.mappings_,
                 col="pre",
                 sides=None,
                 sides_rel=False,
@@ -291,7 +293,7 @@ class Clustering:
 
             down = _add_types(
                 down,
-                types=mappings,
+                types=self.mappings_,
                 col="post",
                 sides=None,
                 sides_rel=False,
@@ -390,6 +392,7 @@ class Clustering:
         self.vect_sources_ = np.array(sources)
         self.vect_labels_ = np.array(labels)
 
+        printv("Done.", verbose=verbose)
         printv(
             f"Generated a {self.vect_.shape[0]:,} by {self.vect_.shape[1]:,} observation vector.",
             verbose=verbose,
