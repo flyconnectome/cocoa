@@ -7,9 +7,11 @@ import seaborn as sns
 import matplotlib.colors as mcl
 import matplotlib.pyplot as plt
 
+from functools import lru_cache
 from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
+# but more importantly it is much more memory efficient
 from fastcluster import linkage
 from scipy.cluster.hierarchy import cut_tree, leaves_list, dendrogram
 from scipy.spatial.distance import squareform
@@ -188,6 +190,17 @@ class Clustering:
         results["n_syn"] = results.label.map(n_syn)
         return results
 
+    @lru_cache(maxsize=1)
+    def get_linkage(self, method="ward", preserve_input=True):
+        """Calculate and cache linkage matrix for the clustering."""
+        # Check if we can re-use a condensed vector-form distance matrix
+        s = getattr(self, "dists_vect_", squareform(self.dists_.values, checks=False))
+
+        return linkage(
+            s,
+            method=method,
+            preserve_input=preserve_input,  # note: this doesn't do anything if our distances are float32
+        )
     def compile(
         self,
         join="existing",
@@ -473,11 +486,7 @@ class Clustering:
             x = 1 - x
 
         # Generate linkage and extract order
-        Z = linkage(
-            squareform(self.dists_.values, checks=False),
-            method=link_method,
-            preserve_input=False,
-        )
+        Z = self.get_linkage(method=link_method)
         leafs = leaves_list(Z)
 
         # Generate table
@@ -547,9 +556,7 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = linkage(
-            squareform(x.values, checks=False), preserve_input=False, **defaults
-        )
+        Z = self.get_linkage(**defaults)
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -622,22 +629,16 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def plot_dendrogram(
-        self,
-        color_by="dataset",
-        cmap="tab10",
-        ax=None,
-        **kwargs
-    ):
+    def plot_dendrogram(self, color_by="dataset", cmap="tab10", ax=None, **kwargs):
         """Plot dendrogram.
-        
+
         Parameters
         ----------
         color_by :      "dataset" | "label" | np.ndarray, optional
                         How to color the neurons (i.e. leafs in the dendrogram).
-                        If a numpy array must be a list of labels, one for each 
+                        If a numpy array must be a list of labels, one for each
                         neuron in the same order as in `Clustering.dists_`.
-        cmap :          str | dict 
+        cmap :          str | dict
                         Colormap to use for coloring neurons. If a dict, must
                         map `color_by` labels to colors.
         ax :            matplotlib Ax, optional
@@ -645,18 +646,14 @@ class Clustering:
         **kwargs
                         Keyword arguments are passed to scipy.dendrogram.
 
-        Returns 
+        Returns
         -------
-        dn :            dict 
+        dn :            dict
                         The scipy dendrogram object.
 
         """
         dists = self.dists_
-        Z = linkage(
-            squareform(dists.values, checks=False),
-            preserve_input=False,
-            **CLUSTER_DEFAULTS,
-        )
+        Z = self.get_linkage(**CLUSTER_DEFAULTS)
 
         if ax is None:
             fig, ax = plt.subplots()
@@ -676,12 +673,12 @@ class Clustering:
             elif color_by == "label":
                 labels = self.vect_labels_
             elif isinstance(color_by, (np.ndarray, list)):
-                labels = np.asarray(color_by) 
+                labels = np.asarray(color_by)
             else:
                 raise TypeError(
                     'Unknown type for `color_by`, must be "dataset", "label" or a list/array of labels'
                 )
-            
+
             if len(labels) != len(dists):
                 raise ValueError(
                     "Length of `color_by` must match the number of neurons."
@@ -698,19 +695,21 @@ class Clustering:
             else:
                 raise TypeError(f'Unknown type for `cmap`, got "{type(cmap)}"')
 
-            # Get the leaves list 
+            # Get the leaves list
             ll = leaves_list(Z)
             rectangles = []
 
             # Collect rectangles
             for i, ix in enumerate(ll):
                 rectangles.append(
-                    Rectangle(xy=(i * 10 + 1, -0.7), width=8, height=0.7, fc=cmap[labels[ix]])
+                    Rectangle(
+                        xy=(i * 10 + 1, -0.7), width=8, height=0.7, fc=cmap[labels[ix]]
+                    )
                 )
             ax.add_collection(PatchCollection(rectangles, match_original=True))
 
             # Add small padding so we don't cut off the rectangles
-            ax.set_ylim(bottom=-.1)  
+            ax.set_ylim(bottom=-0.1)
 
         return dn
 
@@ -727,9 +726,9 @@ class Clustering:
                         Possible values are "id", "label" and "dataset".
         fontsize :      int | float | None
                         Fontsize for tick labels. If `None`, will remove labels.
-        **kwargs 
+        **kwargs
                         Keyword arguments are passed to seaborn.clustermap
-                        
+
         Returns
         -------
         cm :            sns.clustermap
@@ -737,11 +736,7 @@ class Clustering:
 
         """
         dists = self.dists_
-        Z = linkage(
-            squareform(dists.values, checks=False),
-            preserve_input=False,
-            **CLUSTER_DEFAULTS,
-        )
+        Z = self.get_linkage(**CLUSTER_DEFAULTS)
 
         # We seem to sometimes get negative cluster distances which dendrogram()
         # does not like - perhaps something to do with neurons not having any
@@ -771,7 +766,7 @@ class Clustering:
             col_colors=col_colors,
             row_linkage=Z,
             col_linkage=Z,
-            **kwargs
+            **kwargs,
         )
         ax = cm.ax_heatmap
         ix = cm.dendrogram_row.reordered_ind
