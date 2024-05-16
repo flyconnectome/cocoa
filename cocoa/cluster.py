@@ -982,6 +982,7 @@ def generate_clustering(
     hb=None,
     mcns=None,
     split_lr=True,
+    ignore_hb_l=True,
     live_annot=False,
     upstream=True,
     downstream=True,
@@ -1004,6 +1005,8 @@ def generate_clustering(
                 into left and right. See also `split_lr` parameter.
     split_lr :  bool
                 If True, will split IDs into left and right automatically.
+    ignore_hb_l : bool
+                If True, will ignore left hemisphere Hemibrain neurons.
     live_annot : bool
                 Whether to use live annotations. This requires access to SeatTable.
     upstream :  bool
@@ -1080,7 +1083,7 @@ def generate_clustering(
                 hb.neurons, hb_ann[hb_ann.side == "left"].bodyId.astype(int)
             )
 
-            if any(is_left):
+            if any(is_left) and not ignore_hb_l:
                 datasets.append(
                     Hemibrain(
                         live_annot=live_annot,
@@ -1116,10 +1119,16 @@ def generate_clustering(
                 mcns_ann[mcns_ann.soma_side.isin(["left", "L"])].bodyId.astype(int),
             )
             mcns_left = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsL", cn_object=mcns_cn_object
+                upstream=upstream,
+                downstream=downstream,
+                label="McnsL",
+                cn_object=mcns_cn_object,
             ).add_neurons(np.array(mcns.neurons)[is_left])
             mcns_right = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsR", cn_object=mcns_cn_object
+                upstream=upstream,
+                downstream=downstream,
+                label="McnsR",
+                cn_object=mcns_cn_object,
             ).add_neurons(np.array(mcns.neurons)[~is_left])
 
             if len(mcns_left.neurons):
