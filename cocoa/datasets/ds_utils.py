@@ -37,7 +37,6 @@ MCNS_BAD_TYPES = (
     "Mi",
     "VT",
     "ML",
-    "EL",
     "FB",
     "Dm",
     "DNp",
