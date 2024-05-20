@@ -209,6 +209,7 @@ class Clustering:
         include_labels=None,
         cn_frac_threshold=None,
         augment=None,
+        n_batches="auto",
         verbose=True,
     ):
         """Compile combined connectivity vector and calculate distance matrix.
@@ -242,6 +243,9 @@ class Clustering:
                     An second distance matrix (e.g. from NBLAST) that will be
                     used to augment the connectivity-based scores. Index and
                     columns must contain all the IDs in this clustering.
+        n_batches : int | "auto"
+                    Number of batches to use for distance calculation. If "auto"
+                    will use 1 batch per 100k neurons.
 
         Returns
         -------
@@ -270,7 +274,11 @@ class Clustering:
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
             # Recompile if (a) not yet compiled, (b) forced or (c) the current edge list contains types
-            if not hasattr(ds, "edges_") or force_recompile or getattr(ds, "edges_types_used_", False):
+            if (
+                not hasattr(ds, "edges_")
+                or force_recompile
+                or getattr(ds, "edges_types_used_", False)
+            ):
                 printv(
                     f'Compiling connectivity vector for "{ds.label}" '
                     f"({ds.type}) [{i+1}/{len(self.datasets)}]",
@@ -439,8 +447,13 @@ class Clustering:
 
         # Calculate distances
         self.dists_ = calculate_distance(
-            self.vect_, augment=augment, metric=metric, verbose=verbose,
-            n_batches = self.vect_.shape[0] // 100000 + 1  # Start batching after 100k neurons
+            self.vect_,
+            augment=augment,
+            metric=metric,
+            verbose=verbose,
+            n_batches=(self.vect_.shape[0] // 100000 + 1)
+            if n_batches == "auto"  # Start batching after 100k neurons
+            else n_batches,
         )
         self.dists_.columns = [
             f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
