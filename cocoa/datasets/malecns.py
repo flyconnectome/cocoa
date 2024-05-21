@@ -126,11 +126,11 @@ class MaleCNS(DataSet):
             meta = self.get_annotations()
             if right_only:
                 ids = meta.loc[
-                    (meta.type == x) & (meta.side == "right"),
-                    "bodyid",
+                    (meta.type == x) & meta.side.isin(("R", "right")),
+                    "bodyId",
                 ].values.astype(np.int64)
             else:
-                ids = meta.loc[(meta.type == x), "bodyid"].values.astype(np.int64)
+                ids = meta.loc[(meta.type == x), "bodyId"].values.astype(np.int64)
 
         return np.unique(np.array(ids, dtype=np.int64))
 
