@@ -264,8 +264,9 @@ class Clustering:
         if not isinstance(augment, (pd.DataFrame, type(None))):
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
-        if not issubclass(mapper, BaseMapper):
-            raise TypeError(f'`mapper` must be a Mapper, got "{type(mapper)}"')
+        mapper_type = type(mapper) if not isinstance(mapper, type) else mapper
+        if not issubclass(mapper_type, BaseMapper):
+            raise TypeError(f'`mapper` must be a Mapper, got "{mapper_type}"')
 
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
