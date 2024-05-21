@@ -63,11 +63,10 @@ import itertools
 
 import networkx as nx
 import numpy as np
-import pandas as pd
+
 
 from abc import abstractmethod
 from joblib import Parallel, delayed
-from itertools import combinations
 
 from .datasets.core import DataSet
 from .utils import printv
@@ -82,7 +81,7 @@ class Singleton(object):
     def __new__(cls, *args, **kw):
         if not hasattr(cls, "_instance"):
             orig = super(Singleton, cls)
-            cls._instance = orig.__new__(cls, *args, **kw)
+            cls._instance = orig.__new__(cls)
         return cls._instance
 
 
@@ -224,11 +223,24 @@ class GraphMapper(BaseMapper):
     This relies on the individual datasets providing sensible labels graphs.
     See their `.compile_label_graph()` methods for more information.
 
+    Parameters
+    ----------
+    post_process :  bool
+                    If True, will attempt to remove edges from the graph that are
+                    not necessary for maintaining the mapping between datasets.
+                    This seems to be reasonably good at removing "accidental" edges
+                    (from spurious annotations) but it may also produce mappings
+                    that are imbalanced.
+
     """
     _graphs = {}
 
     # TODOs:
     # - use direct mappings where available (e.g. the "hb123456" hemibrain types in FlyWire)
+
+    def __init__(self, post_process=True):
+        self.post_process = post_process
+        super().__init__()
 
     def build_mapping(self, *datasets, force_rebuild=False, verbose=True):
         """Build mappings between datasets.
@@ -311,7 +323,14 @@ class GraphMapper(BaseMapper):
             nx.set_node_attributes(G, True, ds.label)
             # Also set a normal node attribute for the neurons in this dataset
             # (this is mainly for convenience when inspecting the graph)
-            nx.set_node_attributes(G, {n: ds.label for n in G.nodes if G.nodes[n].get('type', None) == 'neuron'}, name='dataset')
+            neurons = [n for n in G.nodes if G.nodes[n].get('type', None) == 'neuron']
+            nx.set_node_attributes(G, {n: ds.label for n in neurons}, name='dataset')
+            # Track how many neurons from this dataset point towards a given label
+            n_in = {}
+            for n in neurons:
+                for nn in G.neighbors(n):
+                    n_in[nn] = n_in.get(nn, 0) + 1
+            nx.set_node_attributes(G, n_in, name=f'{ds.label}_in')
             graphs.append(G)
 
         # Combine graphs
@@ -373,12 +392,58 @@ class GraphMapper(BaseMapper):
         # print(all_prim - keep)
 
         # Now subset the graph to only include the shortest paths
-        G_trimmed = G_labels.subgraph(keep)
+        G_trimmed = G_labels.subgraph(keep).to_undirected()  # note: do NOT remove the to_undirected here
+
+        # At this point we may still have edges in the graph that we don't actually need
+        # This can happen when e.g. the malecns_type has a fine-grained setting but the
+        # hemibrain_type is still a huge compound type. What we can try is this:
+        # - iterate over all connnected components
+        # - check all the edges in the cc for whether we can remove them without
+        #   one of the new connected components losing a connection to a dataset
+        self.spurious_edges_ = []
+        if self.post_process:
+            for ccn in nx.connected_components(G_trimmed):
+                if len(ccn) == 1:
+                    continue
+                sg = G_trimmed.subgraph(ccn)
+
+                # Get the ratio between datasets in this connected component
+                counts_org = {ds.label: sum([G.nodes[n].get(f"{ds.label}_in", 0) for n in ccn]) for ds in datasets}
+                ratio_org = max(counts_org.values()) / min(counts_org.values())
+
+                for edge in sg.edges:
+                    # Check if removing this edge generate a new connected component
+                    # without loosing a connection to a dataset
+                    sg2 = sg.copy()
+                    sg2.remove_edge(*edge)
+                    can_remove = True
+                    for ccn2 in nx.connected_components(sg2):
+                        # Get count of neurons associated with each dataset in this connected component
+                        counts = {ds.label: sum([G.nodes[n].get(f"{ds.label}_in", 0) for n in ccn2]) for ds in datasets}
+                        if any(c == 0 for c in counts.values()):
+                            can_remove = False
+                            break
+                        ratio = max(counts.values()) / min(counts.values())
+
+                        # If the ratio between datasets gets much worse than it was before, we should not remove the edge
+                        if (ratio / ratio_org > 1.5) | (ratio_org / ratio > 1.5):
+                            can_remove = False
+                            break
+
+                    if can_remove:
+                        self.spurious_edges_.append(edge)
+            # Remove edges
+            if len(self.spurious_edges_):
+                print(f"Removing {len(self.spurious_edges_)} potentially spurious edges from the graph.")
+                # Note to self: in a previous version I had issues that some edges were not removed
+                # Turned out that was because I collected the edges from the *undirected* graph
+                # but tried to remove them from the *directed* graph which silently failed.
+                # We have since changed the code such that the G_trimmed is always undirected.
+                G_trimmed.remove_edges_from(self.spurious_edges_)
 
         # Generate mappings between labels
         mappings_labels = {}
-        for ccn in nx.connected_components(G_trimmed.to_undirected()):
-
+        for ccn in nx.connected_components(G_trimmed):
             # Note to future self:
             # We should probably introduce some weight metric when finding the paths earlier
             # Then we could use the weights within the connected component to suss out potential
@@ -407,12 +472,22 @@ class GraphMapper(BaseMapper):
             except StopIteration:
                 pass
 
-        printv("Done.", verbose=verbose, flush=True)
-
         self._mappings[ds_identifier] = mappings
 
         # Keep a version of the graph for later inspection
-        self._graphs[ds_identifier] = G.subgraph(keep | set(mappings.keys()))
+        G_full = G.subgraph(keep | set(mappings.keys())).copy()
+
+        if len(self.spurious_edges_):
+            for e in self.spurious_edges_:
+                # Because the spurious edges are undirected, we have to remove them both ways
+                if e in G_full.edges:
+                    G_full.remove_edge(*e)
+                if (e[1], e[0]) in G_full.edges:
+                    G_full.remove_edge(e[1], e[0])
+
+        self._graphs[ds_identifier] = G_full
+
+        printv("Done.", verbose=verbose, flush=True)
 
         return self._mappings[ds_identifier]
 
