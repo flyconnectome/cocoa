@@ -403,9 +403,11 @@ class Clustering:
             adj = ds.edges_proc_.groupby(["pre", "post"]).weight.sum().unstack()
             # Get downstream adjacency (rows = queries, columns = shared targets)
             down = adj.reindex(index=ds.neurons, columns=to_use)
+            down.columns = pd.MultiIndex.from_tuples([('downstream', c) for c in down.columns])
             # Get upstream adjacency (rows = shared inputs, columns = queries)
-            up = adj.reindex(columns=ds.neurons, index=to_use)
-            adjacencies.append(pd.concat((down, up.T), axis=1).fillna(0))
+            up = adj.reindex(columns=ds.neurons, index=to_use).T
+            up.columns = pd.MultiIndex.from_tuples([('upstream', c) for c in up.columns])
+            adjacencies.append(pd.concat((down, up), axis=1).fillna(0))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
         self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
