@@ -442,7 +442,7 @@ class MaleCNS(DataSet):
                     ds,
                     types=types,
                     col="post",
-                    sides=None if not self.use_sides else _get_hb_sides(),
+                    sides=None if not self.use_sides else _get_mcns_meta(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
             # print("Done!")
