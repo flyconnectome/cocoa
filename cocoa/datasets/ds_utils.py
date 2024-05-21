@@ -57,7 +57,7 @@ FLYWIRE_LIVE_COLUMNS = [
     "malecns_type",
     "ito_lee_hemilineage",
     "side",
-    "status"
+    "status",
 ]
 
 
@@ -190,7 +190,7 @@ def _load_live_flywire_annotations(mat=None):
     table = table[table.flow.notnull()]
 
     # Drop duplicates
-    table = table[~table.status.isin(['duplicate', 'bad_nucleus'])].copy()
+    table = table[~table.status.isin(["duplicate", "bad_nucleus"])].copy()
 
     if mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
@@ -453,6 +453,19 @@ def _get_hb_sides(live=False):
     """Fetch hemibrain sides from flytable."""
     meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
+
+    # Drop neurons without a side
+    meta = meta[meta.side.notnull()]
+
+    return meta.set_index("bodyId").side.to_dict()
+
+
+@lru_cache
+def _get_mcns_sides(source="clio"):
+    """Fetch male CNS sides."""
+    meta = _get_mcns_meta(source=source).rename(
+        {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
+    )
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]

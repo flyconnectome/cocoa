@@ -14,7 +14,7 @@ from .ds_utils import (
     _get_neuprint_mcns_client,
     _is_int,
     _get_mcns_types,
-    _get_hb_sides,
+    _get_mcns_sides,
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
@@ -409,7 +409,7 @@ class MaleCNS(DataSet):
                     us,
                     types=types,
                     col="pre",
-                    sides=None if not self.use_sides else _get_hb_sides(),
+                    sides=None if not self.use_sides else _get_mcns_sides(source=self.meta_source),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
             # print("Done!")
