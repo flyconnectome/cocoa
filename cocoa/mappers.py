@@ -247,6 +247,10 @@ class GraphMapper(BaseMapper):
         # Validate datasets
         self.validate_dataset(datasets)
 
+        if force_rebuild:
+            for ds in datasets:
+                ds.clear_cache()
+
         # N.B. that we really only need one dataset per dataset type! E.g. having two
         # FlyWire datasets is redundant because they will have the same labels.
         # In the future, we could implement "hemispheres", i.e. FlyWire left vs right
