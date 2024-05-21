@@ -147,6 +147,13 @@ class MaleCNS(DataSet):
 
         return x
 
+    def clear_cache(self):
+        """Clear cached data (e.g. annotations)."""
+        _get_mcns_meta.cache_clear()
+        _get_mcns_types.cache_clear()
+        _get_mcns_meta.cache_clear()
+        print("Cleared cached male CNS data.")
+
     def get_annotations(self):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column

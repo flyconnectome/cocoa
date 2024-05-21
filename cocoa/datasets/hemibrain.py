@@ -130,6 +130,13 @@ class Hemibrain(DataSet):
 
         return x
 
+    def clear_cache(self):
+        """Clear cached data (e.g. annotations)."""
+        _get_hemibrain_meta.cache_clear()
+        _get_hemibrain_types.cache_clear()
+        _get_hb_sides.cache_clear()
+        print("Cleared cached hemibrain data.")
+
     def get_annotations(self):
         """Return annotations."""
         return _get_hemibrain_meta(live=self.live_annot)

@@ -252,6 +252,14 @@ class FlyWire(DataSet):
 
         return np.isin(x, list(G.nodes))
 
+    def clear_cache(self):
+        """Clear cached data (e.g. annotations)."""
+        _load_live_flywire_annotations.cache_clear()
+        _load_static_flywire_annotations.cache_clear()
+        _get_fw_sides.cache_clear()
+        _get_fw_types.cache_clear()
+        print("Cleared cached FlyWire data.")
+
     # Should this be cached and/or turned into a classmethod?
     def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
         """Compile label graph.
