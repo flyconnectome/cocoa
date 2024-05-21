@@ -290,7 +290,7 @@ def _get_mcns_meta(source):
 
 
 @lru_cache
-def _get_neuprint_client():
+def _get_neuprint_hemibrain_client():
     return neu.Client("https://neuprint.janelia.org", dataset="hemibrain:v1.2.1")
 
 

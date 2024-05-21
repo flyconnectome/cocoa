@@ -7,7 +7,7 @@ from .core import DataSet
 from .scenes import HEMIBRAIN_MINIMAL_SCENE
 from .ds_utils import (
     _get_hemibrain_meta,
-    _get_neuprint_client,
+    _get_neuprint_hemibrain_client,
     _is_int,
     _get_hemibrain_types,
     _get_hb_sides,
@@ -237,7 +237,7 @@ class Hemibrain(DataSet):
 
     def compile(self):
         """Compile connectivity vector."""
-        client = _get_neuprint_client()
+        client = _get_neuprint_hemibrain_client()
 
         x = self.neurons.astype(np.int64)
 
