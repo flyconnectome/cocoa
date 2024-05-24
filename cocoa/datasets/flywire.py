@@ -449,6 +449,9 @@ class FlyWire(DataSet):
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
 
+        if collapse_types:
+            self.edges_ = self.edges_.groupby(["pre", "post"], as_index=False).weight.sum()
+
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types
         self.edges_sides_used_ = self.use_sides
