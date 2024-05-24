@@ -35,7 +35,6 @@ MCNS_BAD_TYPES = (
     "MeMe",
     "PFGs",
     "Mi",
-    "VT",
     "ML",
     "FB",
     "Dm",
