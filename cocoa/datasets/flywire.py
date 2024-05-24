@@ -121,20 +121,7 @@ class FlyWire(DataSet):
             self.cn_file = Path(self.cn_file).expanduser()
             if not self.cn_file.is_file():
                 raise ValueError(f'"{self.cn_file}" is not a valid file')
-            try:
-                file_mat = int(str(self.cn_file).split("_")[-1].split(".")[0])
-                if file_mat != self.materialization:
-                    raise ValueError(
-                        "Connectivity file name suggests it is from "
-                        f"materialization {file_mat} but dataset was "
-                        f"initialized with `materialization={self.materialization}`"
-                    )
-            except ValueError:
-                print(
-                    "Unable to parse materialization from filename. Please make "
-                    "sure the connectivity represents materialization version "
-                    f"'{self.materialization}'."
-                )
+            check_filename_mat(self.materialization, self.cn_file)
 
     def _add_neurons(self, x, exact=True, sides=None):
         """Turn `x` into FlyWire root IDs."""
