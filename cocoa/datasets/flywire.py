@@ -303,13 +303,14 @@ class FlyWire(DataSet):
 
         # Add synonyms:
         # 1. Take care of cases where the mcns_type is different from the cell type
-        syn = (
-            ann.loc[ann.cell_type.notnull() & ann.malecns_type.notnull(),]
-            .groupby(["malecns_type", "cell_type"], as_index=False)
-            .size()
-        )
-        syn = syn[syn.malecns_type != syn.cell_type]
-        G.add_weighted_edges_from(zip(syn.malecns_type, syn.cell_type, syn["size"]))
+        if "malecns_type" in ann.columns:
+            syn = (
+                ann.loc[ann.cell_type.notnull() & ann.malecns_type.notnull(),]
+                .groupby(["malecns_type", "cell_type"], as_index=False)
+                .size()
+            )
+            syn = syn[syn.malecns_type != syn.cell_type]
+            G.add_weighted_edges_from(zip(syn.malecns_type, syn.cell_type, syn["size"]))
 
         # 2. Take care of cases where e.g. cell type is PS008a but the hemibrain type is PS008
         syn = (
@@ -320,16 +321,19 @@ class FlyWire(DataSet):
         syn = syn[syn.cell_type != syn.hemibrain_type]
         G.add_weighted_edges_from(zip(syn.cell_type, syn.hemibrain_type, syn["size"]))
 
-        # 2. Take care of compound types (both from hemibrain and cell type columns)
-        comp = np.append(
-            # Note: for cell type we sometimes have types like "(M_adPNm4,M_adPNm5)b" which we will ignore here
-            ann[
+        # 2. Take care of compound types
+        comp = ann[
                 ann.cell_type.str.contains(",", na=False)
                 & ~ann.cell_type.str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
                 & ~ann.cell_type.str.startswith("CB", na=False) # ignore e.g. "CB.FB3,4A9"
-            ].cell_type.values,
-            ann[ann.hemibrain_type.str.contains(",", na=False)].hemibrain_type.values,
-        )
+            ].cell_type.values
+        for col in ("hemibrain_type", "malecns_type"):
+            if col not in ann.columns:
+                continue
+            comp = np.append(
+                comp,
+                ann[ann[col].str.contains(",", na=False)][col].values,
+            )
         for c, count in zip(*np.unique(comp, return_counts=True)):
             for c2 in c.split(","):
                 G.add_edge(c.strip(), c2.strip(), weight=count)
