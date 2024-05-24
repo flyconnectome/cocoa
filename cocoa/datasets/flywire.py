@@ -325,7 +325,8 @@ class FlyWire(DataSet):
             # Note: for cell type we sometimes have types like "(M_adPNm4,M_adPNm5)b" which we will ignore here
             ann[
                 ann.cell_type.str.contains(",", na=False)
-                & ~ann.cell_type.str.startswith("(", na=False)
+                & ~ann.cell_type.str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
+                & ~ann.cell_type.str.startswith("CB", na=False) # ignore e.g. "CB.FB3,4A9"
             ].cell_type.values,
             ann[ann.hemibrain_type.str.contains(",", na=False)].hemibrain_type.values,
         )
