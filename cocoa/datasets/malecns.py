@@ -377,7 +377,7 @@ class MaleCNS(DataSet):
 
         return G
 
-    def compile(self):
+    def compile(self, collapse_types=False):
         """Compile connectivity vector."""
         client = _get_neuprint_mcns_client()
 
@@ -461,6 +461,9 @@ class MaleCNS(DataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        if collapse_types:
+            self.edges_ = self.edges_.groupby(["pre", "post"], as_index=False).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types
