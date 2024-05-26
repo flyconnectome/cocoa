@@ -364,7 +364,24 @@ class MaleCNS(DataSet):
             ann[ann.flywire_type.str.contains(",", na=False)].flywire_type.values,
         )
         for c, count in zip(*np.unique(comp, return_counts=True)):
-            for c2 in c.split(","):
+            # Unfortunately, there are some FlyWire types like "CB.FB3,4L0" that contain
+            # commas but are not compound types. We need to make sure we don't accidentally
+            # split those, *unless* we have a genuine compound type like "CB.FB3,4L0,CB.FB3,4L1"
+            if c.startswith("CB.FB") and "," in c:
+                # Split by "CB" instead of ','
+                split = [f"CB.{s}" for s in c.split("CB.") if s]
+                # Replace any trailing ','
+                split = [s if not s.endswith(",") else s[:-1] for s in split]
+            else:
+                split = c.split(",")
+
+            if len(split) <= 1:
+                continue
+
+            for c2 in split:
+                # In case we get an empty string
+                if not c2:
+                    continue
                 G.add_edge(c.strip(), c2.strip(), weight=count)
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
