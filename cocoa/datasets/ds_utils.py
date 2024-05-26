@@ -32,6 +32,7 @@ MCNS_BAD_TYPES = (
     "Delta",
     "P1_L candidate",
     "LT",
+    "mAL",
     "MeMe",
     "PFGs",
     "Mi",
