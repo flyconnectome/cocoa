@@ -83,9 +83,23 @@ def collapse_neuron_nodes(G):
     """
     # Turn into edge list
     edges = nx.to_pandas_edgelist(G)
-    edges["weight"] = edges.weight.fillna(1).astype(int)
-    # Get edges from neurons to labels
+
+    if 'weight' not in edges.columns:
+        edges['weight'] = 1
+    else:
+        edges["weight"] = edges.weight.fillna(1).astype(int)
+
+    # If graph is undirected, we have to sort the edges such that
+    # neuron nodes are always the source
     types = nx.get_node_attributes(G, "type")
+    if not nx.is_directed(G):
+        target_is_neuron = edges.target.isin(types)
+        edges.loc[target_is_neuron, "source"], edges.loc[target_is_neuron, "target"] = (
+            edges.loc[target_is_neuron, "target"],
+            edges.loc[target_is_neuron, "source"],
+        )
+
+    # Get the edges from neurons onto labels
     node_edges = edges[
         edges.source.isin([k for k, v in types.items() if v == "neuron"])
     ].copy()
@@ -96,41 +110,29 @@ def collapse_neuron_nodes(G):
     if datasets:
         to_collapse = []
         for ds in set(datasets.values()):
+            # Get the nodes and their targets for this dataset
             node_edges_ds = node_edges[
                 node_edges.source.isin([k for k, v in datasets.items() if v == ds])
             ]
-            adj = (
-                node_edges_ds.pivot(index="source", columns="target", values="weight")
-                .fillna(0)
-                .astype(bool)
-            )
+            # Group such that we get a list of nodes that have the same targets
+            grp = node_edges_ds.groupby("source").target.apply(tuple)
             this_to_collapse = (
-                adj.groupby(list(adj))
-                .apply(lambda x: tuple(x.index), include_groups=False)
-                .values.tolist()
+                grp.groupby(grp).apply(lambda x: tuple(x.index)).values.tolist()
             )
+            # Assign "group_i" labels to for each of the groups
             group2dataset.update(
                 {
-                    f"group_{i+ len(to_collapse)}": ds
+                    f"group_{i + len(to_collapse)}": ds
                     for i in range(len(this_to_collapse))
                 }
             )
             to_collapse.extend(this_to_collapse)
     else:
-        # Pivot
-        adj = (
-            node_edges.pivot(index="source", columns="target", values="weight")
-            .fillna(0)
-            .astype(bool)
-        )
-        # Collapse - this is now a tuple of (id1, id2, ...) for each group
-        to_collapse = (
-            adj.groupby(list(adj))
-            .apply(lambda x: tuple(x.index), include_groups=False)
-            .values
-        )
+        grp = node_edges.groupby("source").target.apply(tuple)
+        to_collapse = grp.groupby(grp).apply(lambda x: tuple(x.index)).values
 
     # We could contract nodes in G now but that's painfully slow
+    # Instead we will work on the edge list again
     groups = {n: f"group_{i}" for i, group in enumerate(to_collapse) for n in group}
     edges["source_new"] = edges.source.map(lambda x: groups.get(x, x))
 
@@ -138,7 +140,9 @@ def collapse_neuron_nodes(G):
     edges_grp = edges.groupby(["source_new", "target"], as_index=False).weight.sum()
 
     # Make collapsed graph
-    G_grp = nx.from_pandas_edgelist(edges_grp, source="source_new", edge_attr=True)
+    G_grp = nx.from_pandas_edgelist(
+        edges_grp, source="source_new", edge_attr=True, create_using=nx.DiGraph
+    )
 
     # Set a bunch of node attributes
     types = {
@@ -149,6 +153,15 @@ def collapse_neuron_nodes(G):
         f"group_{i}": len(group) for i, group in enumerate(to_collapse) for n in group
     }
     nx.set_node_attributes(G_grp, sizes, "size")
+
+    # Copy over the dataset-related attributes (e.g. "FlyWire_in" or "FlyWire": True)
+    if datasets:
+        for ds in set(datasets.values()):
+            nx.set_node_attributes(
+                G_grp, nx.get_node_attributes(G, f"{ds}_in"), f"{ds}_in"
+            )
+            nx.set_node_attributes(G_grp, nx.get_node_attributes(G, f"{ds}"), f"{ds}")
+
     ids = {
         f"group_{i}": ",".join([str(n) for n in group])
         for i, group in enumerate(to_collapse)
