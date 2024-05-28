@@ -280,8 +280,10 @@ class GraphMapper(BaseMapper):
             )
             return self._mappings[ds_identifier]
 
-        # If we only have one dataset, we can just go with the first label for each neuron
-        # This is effectively the same as the SimpleMapper
+        # If we only have one dataset we only need to get to *a* label and that label
+        # should ideally be the most granular label within reach. So for example,
+        # a male CNS neuron might have type='MeTu4e' and `flywire_type='MeTu4'` in
+        # which case we need to make sure to map to 'MeTu4e' and not 'MeTu4'.
         if len(datasets) < 2:
             printv(
                 f"Building mapping for {ds_string}... ",
@@ -294,13 +296,22 @@ class GraphMapper(BaseMapper):
             # the primary labels (i.e. the most granular within the dataset)
             G = ds.compile_label_graph(which_neurons="all")
             mappings = {}
+            keep_edges = set()
             for n in ds.get_all_neurons():
-                try:
-                    # For each node, its first neighbor should be the primary label
-                    mappings[n] = next(G.neighbors(n))
-                except StopIteration:
-                    pass
+                # Get neighbors and sort by in-degree of the label
+                neighbors = sorted(list(G.neighbors(n)), key=lambda x: G.in_degree[x])
+                if not neighbors:
+                    continue
+                mappings[n] = neighbors[0]  # use the most granular label
+                keep_edges.add((n, neighbors[0]))
+
+            # Subset the graph. N.B. we're using subgraph_view to make sure we
+            # get all the nodes but only a subset of the edges
+            G_trimmed = nx.subgraph_view(G, filter_edge=lambda e1, e2: (e1, e2) in keep_edges).copy()
+
             self._mappings[ds_identifier] = mappings
+            self._graphs[ds_identifier] = G_trimmed
+
             printv("Done.", verbose=verbose, flush=True)
             return self._mappings[ds_identifier]
 
