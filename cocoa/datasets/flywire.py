@@ -248,14 +248,13 @@ class FlyWire(DataSet):
         print("Cleared cached FlyWire data.")
 
     # Should this be cached and/or turned into a classmethod?
-    def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
+    def compile_label_graph(self, which_neurons="all", collapse_neurons=False, strict=False):
         """Compile label graph.
 
         For FlyWire, this means:
-         1. Use the `cell_type` back-filled with the `hemibrain_type` as primary labels
-         2. Use `hemibrain_type` as secondary labels (i.e. synonyms)
-         3. Split hemibrain compound types such that e.g. "PS008,PS009"
-            produces two edges: (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
+         1. Use the `cell_type`, `hemibrain_type` (and `malecns_type` if available) as primary labels
+         2. Split compound types such that e.g. "PS008,PS009" produces two edges:
+            (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
 
         Parameters
         ----------
@@ -265,6 +264,8 @@ class FlyWire(DataSet):
         collapse_neurons : bool
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
+        strict:         bool
+                        If True, will prefix the labels with the type of the label (e.g. "flywire:PS008").
 
         Returns
         -------
@@ -282,6 +283,16 @@ class FlyWire(DataSet):
                 raise ValueError("No neurons in dataset")
             ann = ann[ann.root_id.isin(self.neurons)]
 
+        # Add dataset prefix to labels
+        if strict:
+            ann = ann.copy()  # avoid SettingWithCopyWarning
+            for col, name in zip(("cell_type", "hemibrain_type", "malecns_type"),
+                                 ("flywire", "hemibrain", "malecns")):
+                if col not in ann.columns:
+                    continue
+                notnull = ann[col].notnull()
+                ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
+
         # Initialise graph
         G = nx.DiGraph()
 
@@ -289,54 +300,26 @@ class FlyWire(DataSet):
         G.add_nodes_from(ann.root_id, type="neuron")
 
         # Order of labels
-        order = ['malecns_type', 'cell_type', 'hemibrain_type']
-        remaining = ann
-        for col in order:
-            if col not in remaining.columns:
-                continue
-            # Get entries where this column is not null
-            this = remaining[remaining[col].notnull()]
-            # Add edges
-            G.add_edges_from(zip(this.root_id, this[col]))
-            # Remove these entries from the remaining labels
-            remaining = remaining[remaining[col].isnull()]
-
-        # Add synonyms:
-        # 1. Take care of cases where the mcns_type is different from the cell type
-        if "malecns_type" in ann.columns:
-            syn = (
-                ann.loc[ann.cell_type.notnull() & ann.malecns_type.notnull(),]
-                .groupby(["malecns_type", "cell_type"], as_index=False)
-                .size()
-            )
-            syn = syn[syn.malecns_type != syn.cell_type]
-            G.add_weighted_edges_from(zip(syn.malecns_type, syn.cell_type, syn["size"]))
-
-        # 2. Take care of cases where e.g. cell type is PS008a but the hemibrain type is PS008
-        syn = (
-            ann.loc[ann.cell_type.notnull() & ann.hemibrain_type.notnull(),]
-            .groupby(["cell_type", "hemibrain_type"], as_index=False)
-            .size()
-        )
-        syn = syn[syn.cell_type != syn.hemibrain_type]
-        G.add_weighted_edges_from(zip(syn.cell_type, syn.hemibrain_type, syn["size"]))
-
-        # 2. Take care of compound types
-        comp = ann[
-                ann.cell_type.str.contains(",", na=False)
-                & ~ann.cell_type.str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
-                & ~ann.cell_type.str.startswith("CB", na=False) # ignore e.g. "CB.FB3,4A9"
-            ].cell_type.values
-        for col in ("hemibrain_type", "malecns_type"):
+        cols = ['malecns_type', 'cell_type', 'hemibrain_type']
+        for col in cols:
+            # Skip if this column doesn't exist
             if col not in ann.columns:
                 continue
-            comp = np.append(
-                comp,
-                ann[ann[col].str.contains(",", na=False)][col].values,
-            )
-        for c, count in zip(*np.unique(comp, return_counts=True)):
-            for c2 in c.split(","):
-                G.add_edge(c.strip(), c2.strip(), weight=count)
+            # Get entries where this column is not null
+            this = ann[ann[col].notnull()]
+            # Add edges
+            G.add_edges_from(zip(this.root_id, this[col]))
+
+            # Take care of compound types
+            comp = this[
+                this[col].str.contains(",", na=False)
+                & ~this[col].str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
+                & ~this[col].str.startswith("CB", na=False) # ignore e.g. "CB.FB3,4A9"
+            ][col].values
+
+            for c, count in zip(*np.unique(comp, return_counts=True)):
+                for c2 in c.split(","):
+                    G.add_edge(c.strip(), c2.strip(), weight=count)
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
@@ -416,7 +399,11 @@ class FlyWire(DataSet):
         # For grouping by type simply replace pre and post IDs with their types
         # -> we'll aggregate later
         if self.use_types:
-            fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+            if hasattr(self, "types_"):
+                fw_types = self.types_
+            else:
+                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+
             fw_sides = _get_fw_sides(mat, live=self.live_annot)
             if self.upstream:
                 us = _add_types(

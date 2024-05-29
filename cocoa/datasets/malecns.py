@@ -40,11 +40,12 @@ class MaleCNS(DataSet):
     use_types :         bool
                         Whether to group by type.  Note that this may be overwritten
                         when used in the context of a `cocoa.Clustering`.
-    backfill_types :    bool
-                        If True, will backfill the type with information
-                        extracted from other columns such as flywire_type,
-                        hemibrain_type, instance and the group fields. Ignored
-                        if ``use_types=False``.
+    backfill_types :    str | iterable, optional
+                        A list of columns to use (in order) to backfill the `type`
+                        column. Ignored if ``use_types=False``. If `True`, will use
+                        all available columns.
+    exclude_bad_types : bool
+                        Whether to exclude known bad types such as "KC" or "FB".
     use_side :          bool | 'relative'
                         Only relevant if `group_by_type=True`:
                          - if `True`, will split cell types into left/right/center
@@ -54,15 +55,15 @@ class MaleCNS(DataSet):
                         Restrict connectivity to these regions of interest. Works
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
-    meta_source :       "clio" | "neuprint
+    meta_source :       "clio" | "neuprint"
                         Source for meta data.
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
-    cn_object :         str | pd.DataFrame 
-                        Either a DataFrame or path to a `.feather` connectivity file which 
-                        will be loaded into a DataFrame. The DataFrame is expected to 
-                        come from `neuprint.fetch_adjacencies` and include all relevant 
+    cn_object :         str | pd.DataFrame
+                        Either a DataFrame or path to a `.feather` connectivity file which
+                        will be loaded into a DataFrame. The DataFrame is expected to
+                        come from `neuprint.fetch_adjacencies` and include all relevant
                         IDs.
 
     """
@@ -73,7 +74,8 @@ class MaleCNS(DataSet):
         upstream=True,
         downstream=True,
         use_types=False,
-        backfill_types=False,
+        backfill_types=("flywire_type", "hemibrain_type"),
+        exclude_bad_types=True,
         use_sides=False,
         rois=None,
         meta_source="clio",
@@ -87,9 +89,22 @@ class MaleCNS(DataSet):
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
-        self.backfill_types = backfill_types
         self.meta_source = meta_source
         self.cn_object = cn_object
+        self.exclude_bad_types = exclude_bad_types
+
+        if isinstance(backfill_types, str):
+            backfill_types = [backfill_types]
+        elif isinstance(backfill_types, np.ndarray):
+            backfill_types = backfill_types.tolist()
+        elif isinstance(backfill_types, bool):
+            if not backfill_types:
+                backfill_types = None
+            else:
+                backfill_types = ("flywire_type", "hemibrain_type", "group", "instance")
+        elif not isinstance(backfill_types, (list, tuple)):
+            raise ValueError("`backfill_types` must be a str, a list or tuple or `None`")
+        self.backfill_types = backfill_types
 
         if rois is not None:
             self.rois = _parse_neuprint_roi(rois, client=_get_neuprint_mcns_client())
@@ -144,6 +159,7 @@ class MaleCNS(DataSet):
         x.backfill_types = self.backfill_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
+        x.exclude_bad_types = self.exclude_bad_types
 
         return x
 
@@ -181,7 +197,11 @@ class MaleCNS(DataSet):
 
         """
         # Fetch all types for this version
-        types = _get_mcns_types(add_side=False, source=self.meta_source)
+        types = _get_mcns_types(
+            add_side=False,
+            source=self.meta_source,
+            backfill_types=self.backfill_types,
+        )
 
         if x is None:
             return types
@@ -228,17 +248,13 @@ class MaleCNS(DataSet):
         return np.isin(x, list(G.nodes))
 
     def compile_label_graph(
-        self, which_neurons="all", exclude_bad_types=True, collapse_neurons=False
+        self, which_neurons="all", collapse_neurons=False, strict=False
     ):
         """Compile label graph.
 
         For the MaleCNS, this means:
-         1. Use the `type` as primary labels backfill with (in order):
-            - `flywire_type`
-            - `group`
-            - `instance`
-         2. Add synonyms for `type` and `flywire_type`
-         3. Split compound `types` and `flywire_types` such that e.g. "PS008,PS009"
+         1. Use the `type` plus columns defined in `backfill_types`
+         2. Split compound `types` and `flywire_types` such that e.g. "PS008,PS009"
             produces two edges: (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
 
         Parameters
@@ -246,11 +262,11 @@ class MaleCNS(DataSet):
         which_neurons : "all" | "self"
                         Whether to use only the neurons in this dataset or all neurons
                         in the entire MaleCNS dataset (default).
-        exclude_bad_types : bool
-                        Whether to exclude known bad types such as "KC" or "FB".
         collapse_neurons : bool
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
+        strict :        bool
+                        If True, will prefix the labels with the type of the label (e.g. "malecns:PS008").
 
         Returns
         -------
@@ -276,10 +292,15 @@ class MaleCNS(DataSet):
             ann = ann[ann.bodyId.isin(self.neurons)].copy()
 
         # Drop some known bad types
-        if exclude_bad_types:
+        if self.exclude_bad_types:
             ann.loc[ann.type.isin(MCNS_BAD_TYPES), "type"] = None
 
+        # Some clean-up
         if "group" in ann.columns:
+            # First drop any groups that exist only once unless they are for central neurons
+            grp_counts = ann[ann.group.notnull() & (ann.somaSide != "C")].group.value_counts()
+            ann.loc[ann.group.isin(grp_counts[grp_counts == 1].index), "group"] = None
+
             # `group` is a body ID of one of the neurons in that group (e.g. 10063)
             # However, that identity neuron often doesn't have the group itself
             # so we need to manually fix that
@@ -291,7 +312,7 @@ class MaleCNS(DataSet):
                 .to_dict()
             )
             # For each {bodyID: group} also add {group: group}
-            groups.update({v: v for v in groups.values()})
+            groups.update({int(v): v for v in groups.values()})
 
             # Rename groups to "mcns_group_{group}"
             groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
@@ -314,7 +335,24 @@ class MaleCNS(DataSet):
             # Rename these ID instances to "mcns_instance_{ID}"
             num_inst = {k: f"mcns_instance_{v}" for k, v in num_inst.items()}
 
-            ann["instance_clean"] = ann.bodyId.map(num_inst)
+            ann["instance"] = ann.bodyId.map(num_inst)
+
+            # Now we need to drop any instances that exist only once unless they are for central neurons
+            inst_counts = ann[ann.instance.notnull() & (ann.somaSide != "C")].instance.value_counts()
+            ann.loc[ann.instance.isin(inst_counts[inst_counts == 1].index), "instance"] = None
+
+        # Add dataset prefix to labels
+        # (instance and group are already prefixed)
+        if strict:
+            ann = ann.copy()  # avoid SettingWithCopyWarning
+            for col, name in zip(
+                ("type", "hemibrain_type", "flywire_type"),
+                ("malecns", "hemibrain", "flywire"),
+            ):
+                if col not in ann.columns:
+                    continue
+                notnull = ann[col].notnull()
+                ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
 
         # Initialise graph
         G = nx.DiGraph()
@@ -322,67 +360,32 @@ class MaleCNS(DataSet):
         # Add neuron nodes
         G.add_nodes_from(ann.bodyId, type="neuron")
 
-        # Add mappings to primary label
-        prim = ann[ann.type.notnull()]
-        G.add_edges_from(zip(prim.bodyId, prim.type))
+        # Add labels
+        cols = ["type"]
+        if self.backfill_types:
+            cols.extend(self.backfill_types)
 
-        # Backfill `type` with `flywire_type` if `type` is missing
-        sec = ann[ann.type.isnull() & ann.flywire_type.notnull()]
-        G.add_edges_from(zip(sec.bodyId, sec.flywire_type))
-
-        # Add mappings to tertiary and quaternary labels
-        if "group" in ann.columns:
-            tert = ann[
-                ~ann.bodyId.isin(prim.bodyId)
-                & ~ann.bodyId.isin(sec.bodyId)
-                & ann.group.notnull()
-            ]
-            G.add_edges_from(zip(tert.bodyId, tert.group))
-        else:
-            tert = ann.iloc[0:0]
-
-        if "instance_clean" in ann.columns:
-            quart = ann[
-                ~ann.bodyId.isin(prim.bodyId)
-                & ~ann.bodyId.isin(sec.bodyId)
-                & ~ann.bodyId.isin(tert.bodyId)
-                & ann.instance_clean.notnull()
-            ]
-            G.add_edges_from(zip(quart.bodyId, quart.instance_clean))
-
-        # Add synonyms:
-        syn = (
-            ann.loc[ann.type.notnull() & ann.flywire_type.notnull(),]
-            .groupby(["type", "flywire_type"], as_index=False)
-            .size()
-        )
-        syn = syn[syn.type != syn.flywire_type]
-        G.add_weighted_edges_from(zip(syn.type, syn.flywire_type, syn["size"]))
-        # 2. Take care of compound types in both FlyWire and cell type columns (probably the former)
-        comp = np.append(
-            ann[ann.type.str.contains(",", na=False)].type.values,
-            ann[ann.flywire_type.str.contains(",", na=False)].flywire_type.values,
-        )
-        for c, count in zip(*np.unique(comp, return_counts=True)):
-            # Unfortunately, there are some FlyWire types like "CB.FB3,4L0" that contain
-            # commas but are not compound types. We need to make sure we don't accidentally
-            # split those, *unless* we have a genuine compound type like "CB.FB3,4L0,CB.FB3,4L1"
-            if c.startswith("CB.FB") and "," in c:
-                # Split by "CB" instead of ','
-                split = [f"CB.{s}" for s in c.split("CB.") if s]
-                # Replace any trailing ','
-                split = [s if not s.endswith(",") else s[:-1] for s in split]
-            else:
-                split = c.split(",")
-
-            if len(split) <= 1:
+        for col in cols:
+            # Skip if this column doesn't exist
+            if col not in ann.columns:
                 continue
+            # Get entries where this column is not null
+            this = ann[ann[col].notnull()]
+            # Add edges
+            G.add_edges_from(zip(this.bodyId, this[col]))
 
-            for c2 in split:
-                # In case we get an empty string
-                if not c2:
-                    continue
-                G.add_edge(c.strip(), c2.strip(), weight=count)
+            # Take care of compound types
+            comp = this[
+                this[col].str.contains(",", na=False)
+                & ~this[col].str.startswith(
+                    "(", na=False
+                )  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
+                & ~this[col].str.startswith("CB", na=False)  # ignore e.g. "CB.FB3,4A9"
+            ][col].values
+
+            for c, count in zip(*np.unique(comp, return_counts=True)):
+                for c2 in c.split(","):
+                    G.add_edge(c.strip(), c2.strip(), weight=count)
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
@@ -419,9 +422,11 @@ class MaleCNS(DataSet):
                 if self.rois is not None:
                     us = us[us.roi.isin(self.rois)]
                 us = us.copy()  # avoid SettingWithCopyWarning
-            else:   
+            else:
                 _, us = neu.fetch_adjacencies(
-                    targets=neu.NeuronCriteria(bodyId=x, client=client), rois=self.rois, client=client
+                    targets=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client,
                 )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
@@ -433,7 +438,9 @@ class MaleCNS(DataSet):
                     us,
                     types=types,
                     col="pre",
-                    sides=None if not self.use_sides else _get_mcns_sides(source=self.meta_source),
+                    sides=None
+                    if not self.use_sides
+                    else _get_mcns_sides(source=self.meta_source),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
             # print("Done!")
@@ -447,7 +454,9 @@ class MaleCNS(DataSet):
                 ds = ds.copy()  # avoid SettingWithCopyWarning
             else:
                 _, ds = neu.fetch_adjacencies(
-                    sources=neu.NeuronCriteria(bodyId=x, client=client), rois=self.rois, client=client
+                    sources=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client,
                 )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
@@ -480,7 +489,9 @@ class MaleCNS(DataSet):
             raise ValueError("`upstream` and `downstream` must not both be False")
 
         if collapse_types:
-            self.edges_ = self.edges_.groupby(["pre", "post"], as_index=False).weight.sum()
+            self.edges_ = self.edges_.groupby(
+                ["pre", "post"], as_index=False
+            ).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types

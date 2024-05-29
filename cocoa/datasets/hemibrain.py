@@ -181,7 +181,7 @@ class Hemibrain(DataSet):
 
         return np.isin(x, list(G.nodes))
 
-    def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
+    def compile_label_graph(self, which_neurons="all", collapse_neurons=False, strict=False):
         """Compile label graph.
 
         For the hemibrain, this means:
@@ -196,6 +196,8 @@ class Hemibrain(DataSet):
         collapse_neurons : bool
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
+        strict :        bool
+                        If True, will prefix the labels with the type of the label (e.g. "hemibrain:PS008").
 
         Returns
         -------
@@ -219,16 +221,15 @@ class Hemibrain(DataSet):
         # Add neuron nodes
         G.add_nodes_from(ann.bodyId, type="neuron")
 
-        # The hemibrain `type`` is the primary label
-        prim = ann[ann.type.notnull()]
-        G.add_edges_from(zip(prim.bodyId, prim.type))
+        # Add types
+        for col in ["type", "morphology_type"]:
+            types = ann[ann[col].notnull()]
 
-        # The hemibrain `morphology_type` is the secondary label
-        # (important for mapping to e.g. FlyWire)
-        sec = ann[ann.morphology_type.notnull()]
-        sec = sec[sec.type != sec.morphology_type]
-        sec = sec.groupby(["type", "morphology_type"], as_index=False).size()
-        G.add_weighted_edges_from(zip(sec.type, sec.morphology_type, sec['size']))
+            if strict:
+                types = types.copy()
+                types[col] = "hemibrain:" + types[col]
+
+            G.add_edges_from(zip(types.bodyId, types[col]))
 
         if collapse_neurons:
             G = collapse_neuron_nodes(G)

@@ -1,5 +1,4 @@
 import re
-import time
 
 import pandas as pd
 import numpy as np
@@ -23,7 +22,7 @@ from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
 from .utils import make_iterable, req_compile, printv
 from .distance import calculate_distance
-from .mappers import GraphMapper, SimpleMapper, BaseMapper
+from .mappers import GraphMapper, BaseMapper
 
 """
 Code Example:
@@ -375,7 +374,7 @@ class Clustering:
                 to_include |= {t for t in to_use if re.match(la, t)}
             if to_include:
                 printv(
-                    f"Including {len(to_include)} of {len(to_use)} labels: "
+                    f"\nIncluding {len(to_include)} of {len(to_use)} labels: "
                     f"{to_include}",
                     verbose=verbose,
                 )

@@ -308,43 +308,32 @@ def _get_fw_types(mat, add_side=False, live=False):
     """Fetch types from `info`.
 
     - cached
-    - uses `cell_type` first and then falls back to `hemibrain_type`
+    - uses `cell_type` first and then falls back to `hemibrain_type`;
+      if available, will also use `malecns_type`.
     - maps to given materialization version
 
     """
-    cols = ["supervoxel_id", "hemibrain_type", "cell_type"]
-    if add_side:
-        cols += ["side"]
-
     if not live:
         table = _load_static_flywire_annotations(mat=mat)
     else:
         table = _load_live_flywire_annotations(mat=mat)
-    typed = table[table.hemibrain_type.notnull() | table.cell_type.notnull()]
+
+    # Backfill types
+    type_cols = ("cell_type", "malecns_type", "hemibrain_type")
+    table["type"] = None
+    for col in type_cols:
+        if col in table.columns:
+            table["type"] = table["type"].fillna(table[col])
+    typed = table[table.type.notnull()]
 
     if add_side:
-        has_ct = typed.cell_type.notnull()
-        typed.loc[has_ct, "cell_type"] = [
-            f"{t}_{s}"
-            for t, s in zip(typed.cell_type.values[has_ct], typed.side.values[has_ct])
-        ]
-        has_ht = typed.hemibrain_type.notnull()
-        typed.loc[has_ht, "hemibrain_type"] = [
-            f"{t}_{s}"
-            for t, s in zip(
-                typed.hemibrain_type.values[has_ht], typed.side.values[has_ht]
-            )
+        typed = typed.copy()  # Avoid SettingWithCopyWarnings
+        # Add side to type
+        typed["type"] = [
+            f"{t}_{s}" for t, s in zip(typed.type.values, typed.side.values)
         ]
 
-    type_dict = (
-        typed[typed.hemibrain_type.notnull()]
-        .set_index("root_id")
-        .hemibrain_type.to_dict()
-    )
-    type_dict.update(
-        typed[typed.cell_type.notnull()].set_index("root_id").cell_type.to_dict()
-    )
-    return type_dict
+    return typed.set_index("root_id").type.to_dict()
 
 
 @lru_cache
@@ -368,9 +357,25 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
 
 @lru_cache
 def _get_mcns_types(
-    add_side=False, backfill_types=False, exclude_bad_types=True, source="clio"
+    add_side=False,
+    backfill_types=False,
+    exclude_bad_types=True,
+    source="clio",
 ):
-    """Fetch male CNS types from clio."""
+    """Fetch male CNS types from clio.
+
+    Parameters
+    ----------
+    add_side :      bool
+                    If True, will add soma side to the type.
+    backfill_types : list, optional
+                    List of columns to backfill types from.
+    exclude_bad_types : bool
+                    If True, will exclude known bad types.
+    source :        "clio" | "neuprint"
+                    Source of the annotations.
+
+    """
     assert source in (
         "clio",
         "neuprint",
@@ -387,43 +392,47 @@ def _get_mcns_types(
         meta.loc[meta.type.isin(MCNS_BAD_TYPES), "type"] = None
 
     if backfill_types:
-        if "flywire_type" in meta.columns:
-            meta["type"] = meta.type.fillna(meta.flywire_type)
+        for col in backfill_types:
+            if col not in meta.columns:
+                continue
 
-        if "hemibrain_type" in meta.columns:
-            meta["type"] = meta.type.fillna(meta.hemibrain_type)
+            # For "group" and "instance" we need to do a bit of clean-up first
+            if col == "group":
+                # `group` is a body ID of one of the neurons in that group (e.g. 10063)
+                # However, that identity neuron often doesn't have the group itself
+                # so we need to manually fix that
+                groups = (
+                    meta[meta.group.notnull()]
+                    .set_index("bodyId")["group"]
+                    .astype(int)
+                    .astype(str)
+                    .to_dict()
+                )
+                # For each {bodyID: group} also add {group: group}
+                groups.update({int(v): v for v in groups.values()})
 
-        if "group" in meta.columns:
-            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
-            # However, that identity neuron often doesn't have the group itself
-            # so we need to manually fix that
-            groups = (
-                meta[meta.group.notnull()]
-                .set_index("bodyId")["group"]
-                .astype(int)
-                .astype(str)
-                .to_dict()
-            )
-            # For each {bodyID: group} also add {group: group}
-            groups.update({v: v for v in groups.values()})
+                # Add a prefix to the groups
+                groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
 
-            miss = meta.type.isnull()
-            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
-        if "instance" in meta.columns:
-            # Instance is a bit of a mixed bag: we can get things like
-            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
-            # which we will ignore for now
+                miss = meta.type.isnull()
+                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
+            if col == "instance":
+                # Instance is a bit of a mixed bag: we can get things like
+                # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
+                # which we will ignore for now
 
-            # First get {ID}_L types
-            num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
-            num_inst.columns = ["instance"]
-            num_inst["bodyId"] = meta.bodyId.values
-            num_inst = num_inst[num_inst.instance.notnull()]
-            num_inst = num_inst.set_index("bodyId").instance.to_dict()
-            num_inst.update({v: v for v in num_inst.values()})
+                # First get {ID}_L types
+                num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
+                num_inst.columns = ["instance"]
+                num_inst["bodyId"] = meta.bodyId.values
+                num_inst = num_inst[num_inst.instance.notnull()]
+                num_inst = num_inst.set_index("bodyId").instance.to_dict()
+                num_inst.update({v: v for v in num_inst.values()})
 
-            miss = meta.type.isnull()
-            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
+                miss = meta.type.isnull()
+                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
+
+            meta["type"] = meta.type.fillna(meta[col])
 
     # Drop untyped
     meta = meta[meta.type.notnull()]
