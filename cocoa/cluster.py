@@ -1029,7 +1029,9 @@ def generate_clustering(
     downstream=True,
     fw_cn_file=None,
     fw_materialization=783,
+    exclude_queries=False,
     mcns_cn_object=None,
+    clear_caches=False,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
 
@@ -1069,6 +1071,9 @@ def generate_clustering(
     datasets = []
 
     if fw is not None:
+        if clear_caches:
+            FlyWire().clear_cache()
+
         # Use the dataset to parse `fw` into root IDs
         fw = FlyWire(
             live_annot=live_annot,
@@ -1090,6 +1095,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="FwL",
                 cn_file=fw_cn_file,
+                exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[is_left])
             fw_right = FlyWire(
@@ -1098,6 +1104,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="FwR",
                 cn_file=fw_cn_file,
+                exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[~is_left])
 
@@ -1109,6 +1116,9 @@ def generate_clustering(
             datasets.append(fw)
 
     if hb is not None:
+        if clear_caches:
+            Hemibrain().clear_cache()
+
         # Use the dataset to parse `hb` into body IDs
         hb = Hemibrain(
             live_annot=live_annot,
@@ -1130,6 +1140,7 @@ def generate_clustering(
                         live_annot=live_annot,
                         upstream=upstream,
                         downstream=downstream,
+                        exclude_queries=exclude_queries,
                         label="HbL",
                     ).add_neurons(np.array(hb.neurons)[is_left])
                 )
@@ -1140,6 +1151,7 @@ def generate_clustering(
                         live_annot=live_annot,
                         upstream=upstream,
                         downstream=downstream,
+                        exclude_queries=exclude_queries,
                         label="HbR",
                     ).add_neurons(np.array(hb.neurons)[~is_left])
                 )
@@ -1147,6 +1159,9 @@ def generate_clustering(
             datasets.append(hb)
 
     if mcns is not None:
+        if clear_caches:
+            MaleCNS().clear_cache()
+
         # Use the dataset to parse `mcns` into body IDs
         mcns = MaleCNS(
             upstream=upstream, downstream=downstream, label="Mcns"
@@ -1155,6 +1170,10 @@ def generate_clustering(
         # Now split into left/right
         if split_lr:
             mcns_ann = mcns.get_annotations()
+
+            if "root_side" in mcns_ann.columns:
+                mcns_ann['soma_side'] = mcns_ann.soma_side.fillna(mcns_ann.root_side)
+
             is_left = np.isin(
                 mcns.neurons,
                 mcns_ann[mcns_ann.soma_side.isin(["left", "L"])].bodyId.astype(int),
@@ -1164,12 +1183,14 @@ def generate_clustering(
                 downstream=downstream,
                 label="McnsL",
                 cn_object=mcns_cn_object,
+                exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[is_left])
             mcns_right = MaleCNS(
                 upstream=upstream,
                 downstream=downstream,
                 label="McnsR",
                 cn_object=mcns_cn_object,
+                exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[~is_left])
 
             if len(mcns_left.neurons):
