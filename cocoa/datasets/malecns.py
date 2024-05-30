@@ -174,7 +174,8 @@ class MaleCNS(DataSet):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
         ann = _get_mcns_meta(source=self.meta_source).rename(
-            {"bodyid": "bodyId", "soma_side": "somaSide"}, axis=1
+            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
+            axis=1,
         )
 
         # Drop empty strings (from e.g. `type`` column)

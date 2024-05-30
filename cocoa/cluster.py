@@ -1170,12 +1170,12 @@ def generate_clustering(
         if split_lr:
             mcns_ann = mcns.get_annotations()
 
-            if "root_side" in mcns_ann.columns:
-                mcns_ann['soma_side'] = mcns_ann.soma_side.fillna(mcns_ann.root_side)
+            if "rootSide" in mcns_ann.columns:
+                mcns_ann['somaSide'] = mcns_ann.somaSide.fillna(mcns_ann.rootSide)
 
             is_left = np.isin(
                 mcns.neurons,
-                mcns_ann[mcns_ann.soma_side.isin(["left", "L"])].bodyId.astype(int),
+                mcns_ann[mcns_ann.somaSide.isin(["left", "L"])].bodyId.astype(int),
             )
             mcns_left = MaleCNS(
                 upstream=upstream,
