@@ -279,7 +279,16 @@ def _get_mcns_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
         client = _get_clio_client("CNS")
-        return clio.fetch_annotations(None, client=client)
+        ann = clio.fetch_annotations(None, client=client)
+
+        # Currently, Clio has both a `rootSide` and `root_side` column
+        # Only the later is useful.
+        ann = ann.drop("rootSide", errors="ignore", axis=1)
+
+        return ann.rename(
+            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
+            axis=1,
+        )
     else:
         client = _get_neuprint_mcns_client()
         return neu.fetch_neurons(
