@@ -449,10 +449,6 @@ class GraphMapper(BaseMapper):
         # print(all_prim - keep)
 
         # Now subset the graph to only include the shortest paths between neurons
-        # G_trimmed = nx.edge_subgraph(G, keep_edges.keys()).to_undirected()
-        # nx.set_edge_attributes(G_trimmed, keep_edges, "weight")
-
-        # Now subset the graph to only include the shortest paths between neurons
         G_trimmed = G.subgraph(
             keep
         ).to_undirected()  # note: do NOT remove the to_undirected here
@@ -468,6 +464,7 @@ class GraphMapper(BaseMapper):
         if self.post_process:
             # Collapse neurons into groups - this should speed things up quite a lot
             G_trimmed_grp = collapse_neuron_nodes(G_trimmed).to_undirected()
+
             for ccn in nx.connected_components(G_trimmed_grp):
                 # Get the subgraph for this connected component
                 sg = G_trimmed_grp.subgraph(ccn)
@@ -496,18 +493,27 @@ class GraphMapper(BaseMapper):
                     )
 
                 # Add the difference to the spurious edges
-                self.spurious_edges_.extend(
-                    [
-                        (s, t)
-                        for s, t in sg.edges
-                        if (s, t) not in sg_keep_edges and (t, s) not in sg_keep_edges
-                    ]
-                )
+                for edge in set(sg.edges) - sg_keep_edges:
+                    # Translate any groups into individual body IDs
+                    if str(edge[0]).startswith("group"):
+                        source = [int(s) for s in sg.nodes[edge[0]]['ids'].split(",")]
+                    else:
+                        source = [edge[0]]
+
+                    if str(edge[1]).startswith("group"):
+                        target = [int(s) for s in sg.nodes[edge[1]]['ids'].split(",")]
+                    else:
+                        target = [edge[1]]
+
+                    for s in source:
+                        for t in target:
+                            self.spurious_edges_.append((s, t))
 
             # Remove edges
             if len(self.spurious_edges_):
-                print(
-                    f"Removing {len(self.spurious_edges_)} potentially spurious edges from the graph."
+                printv(
+                    f"\nRemoving {len(self.spurious_edges_)} potentially spurious edges from the graph.",
+                    verbose=verbose, flush=True
                 )
                 # Note to self: in a previous version I had issues that some edges were not removed
                 # Turned out that was because I collected the edges from the *undirected* graph
@@ -569,7 +575,7 @@ class GraphMapper(BaseMapper):
         printv("Done.", verbose=verbose, flush=True)
 
         printv(
-            f"Found {len(set(self._mappings[ds_identifier].values()))} unique labels for {len(self._mappings[ds_identifier])} neurons.",
+            f"Found {len(set(self._mappings[ds_identifier].values()))} unique labels covering {len(self._mappings[ds_identifier])} neurons.",
             verbose=verbose,
             flush=True,
         )
@@ -742,7 +748,7 @@ def chunks(iterable, n):
         yield x
 
 
-def split_check_recursive(G, partitions=None):
+def split_check_recursive(G, partitions=None, check_ratio=True):
     """Recursively split the graph in two until split is invalid.
 
     Invalid split means that one of the connected components does not
@@ -781,18 +787,20 @@ def split_check_recursive(G, partitions=None):
             if G.nodes[n].get("type", None) == "neuron"
         }:
             valid = False
+            # print(f"Invalid split {neuron_set} of {G.nodes}.")
             break
 
         # Check if the ratios between datasets are similar
-        if ratio:
+        if ratio and check_ratio:
             n_ds = {
                 ds: sum([G.nodes[n].get(f"{ds}_in", 0) for n in neuron_set])
                 for ds in ds
             }
             ratio2 = max(n_ds.values()) / min(n_ds.values())
             # Reject split if the ratios get much worse
-            if (ratio2 / ratio > 1.5) | (ratio / ratio2 > 1.5):
+            if (ratio2 / ratio > 2.5) or (ratio / ratio2 > 2.5):
                 valid = False
+                # print(f"Invalid ratio for split {neuron_set} of {G.nodes}: {ratio2} vs {ratio}.")
                 break
 
     if not valid:
