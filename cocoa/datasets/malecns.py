@@ -173,7 +173,7 @@ class MaleCNS(DataSet):
     def get_annotations(self):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
-        ann = _get_mcns_meta(source=self.meta_source)
+        ann = _get_mcns_meta(source=self.meta_source).copy()
 
         # Drop empty strings (from e.g. `type`` column)
         for c in ann.columns:

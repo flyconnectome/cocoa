@@ -139,7 +139,7 @@ class Hemibrain(DataSet):
 
     def get_annotations(self):
         """Return annotations."""
-        return _get_hemibrain_meta(live=self.live_annot)
+        return _get_hemibrain_meta(live=self.live_annot).copy()
 
     def get_all_neurons(self):
         """Get a list of all neurons in this dataset."""

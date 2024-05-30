@@ -184,9 +184,9 @@ class FlyWire(DataSet):
     def get_annotations(self):
         """Return annotations."""
         if self.live_annot:
-            return _load_live_flywire_annotations(mat=self.materialization)
+            return _load_live_flywire_annotations(mat=self.materialization).copy()
         else:
-            return _load_static_flywire_annotations(mat=self.materialization)
+            return _load_static_flywire_annotations(mat=self.materialization).copy()
 
     def get_all_neurons(self):
         """Get a list of all neurons in this dataset."""
