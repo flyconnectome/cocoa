@@ -174,7 +174,7 @@ class MaleCNS(DataSet):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
         ann = _get_mcns_meta(source=self.meta_source).rename(
-            {"bodyid": "bodyId"}, axis=1
+            {"bodyid": "bodyId", "soma_side": "somaSide"}, axis=1
         )
 
         # Drop empty strings (from e.g. `type`` column)
@@ -298,7 +298,9 @@ class MaleCNS(DataSet):
         # Some clean-up
         if "group" in ann.columns:
             # First drop any groups that exist only once unless they are for central neurons
-            grp_counts = ann[ann.group.notnull() & (ann.somaSide != "C")].group.value_counts()
+            grp_counts = ann[
+                ann.group.notnull() & (ann.somaSide != "C")
+            ].group.value_counts()
             ann.loc[ann.group.isin(grp_counts[grp_counts == 1].index), "group"] = None
 
             # `group` is a body ID of one of the neurons in that group (e.g. 10063)
@@ -338,8 +340,12 @@ class MaleCNS(DataSet):
             ann["instance"] = ann.bodyId.map(num_inst)
 
             # Now we need to drop any instances that exist only once unless they are for central neurons
-            inst_counts = ann[ann.instance.notnull() & (ann.somaSide != "C")].instance.value_counts()
-            ann.loc[ann.instance.isin(inst_counts[inst_counts == 1].index), "instance"] = None
+            inst_counts = ann[
+                ann.instance.notnull() & (ann.somaSide != "C")
+            ].instance.value_counts()
+            ann.loc[
+                ann.instance.isin(inst_counts[inst_counts == 1].index), "instance"
+            ] = None
 
         # Add dataset prefix to labels
         # (instance and group are already prefixed)
