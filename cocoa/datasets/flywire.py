@@ -314,7 +314,7 @@ class FlyWire(DataSet):
             comp = this[
                 this[col].str.contains(",", na=False)
                 & ~this[col].str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
-                & ~this[col].str.startswith("CB", na=False) # ignore e.g. "CB.FB3,4A9"
+                & ~this[col].str.startswith("CB.", na=False) # ignore e.g. "CB.FB3,4A9"
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):
