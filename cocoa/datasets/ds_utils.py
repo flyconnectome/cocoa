@@ -31,6 +31,7 @@ MCNS_BAD_TYPES = (
     "Ascending Interneuron",
     "Delta",
     "P1_L candidate",
+    "P1",
     "LT",
     "mAL",
     "MeMe",
