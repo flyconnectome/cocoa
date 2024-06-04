@@ -211,6 +211,24 @@ class FlyWire(DataSet):
 
         return np.array([types.get(i, i) for i in x])
 
+    def get_sides(self, x):
+        """Fetch sides for given IDs.
+
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Root IDs to fetch sides for. If `None`, will return all labels.
+        """
+        sides = _get_fw_sides(live=self.live_annot, mat=self.materialization)
+
+        if x is None:
+            return sides
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
+
+        return np.array([sides.get(i, i) for i in x])
     def get_ngl_scene(self, flat=False, open=False):
         """Return a minimal neuroglancer scene for this dataset.
 

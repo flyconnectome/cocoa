@@ -291,9 +291,9 @@ class Clustering:
 
         # Generate the mappings
         if isinstance(mapper, type):
-            mapper = mapper()
-        self.mapper_ = mapper
-        self.mappings_ = self.mapper_.build_mapping(*self.datasets, verbose=verbose)
+            mapper = mapper(verbose=verbose)
+        self.mapper_ = mapper.add_dataset(*self.datasets)
+        self.mappings_ = self.mapper_.get_mappings()
 
         printv("Combining connectivity vectors... ", verbose=verbose, end="")
 

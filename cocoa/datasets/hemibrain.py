@@ -166,6 +166,26 @@ class Hemibrain(DataSet):
 
         return np.array([types.get(i, i) for i in x])
 
+    def get_sides(self, x):
+        """Fetch sides for given IDs.
+
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Body IDs to fetch labels for. If `None`, will return all labels.
+
+        """
+        # Fetch all sides for this version
+        sides = _get_hb_sides(live=self.live_annot)
+
+        if x is None:
+            return sides
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
+
+        return np.array([sides.get(i, i) for i in x])
     def label_exists(self, x):
         """Check if labels exists in dataset."""
         x = np.asarray(x)
@@ -269,7 +289,7 @@ class Hemibrain(DataSet):
                     us,
                     types=types,
                     col="pre",
-                    sides=None if not self.use_sides else _get_hb_sides(),
+                    sides=None if not self.use_sides else _get_hb_sides(live=self.live_annot),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -287,7 +307,7 @@ class Hemibrain(DataSet):
                     ds,
                     types=types,
                     col="post",
-                    sides=None if not self.use_sides else _get_hb_sides(),
+                    sides=None if not self.use_sides else _get_hb_sides(live=self.live_annot),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 

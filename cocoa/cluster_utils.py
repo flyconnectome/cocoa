@@ -142,7 +142,7 @@ def _find_clusters_rec(
         # If this is a leaf-node it won't have a "distance" property
         dist = 0
 
-    # Remove the root in this graph
+    # Remove the root in this (sub)graph
     G2 = G.copy()
     G2.remove_node(root)
 

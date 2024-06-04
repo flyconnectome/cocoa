@@ -69,40 +69,38 @@ from abc import abstractmethod
 from joblib import Parallel, delayed
 
 from .datasets.core import DataSet
-from .utils import printv, collapse_neuron_nodes
+from .utils import collapse_neuron_nodes, printv
 
 
 # TODO:
 # - add method to quickly plot/export the graph with labels & annotations
 # - add `use_sides` option (basically adding e.g. _L to the types)
+# - add some quality control functions:
+#   - labels with mismatch in numbers of neurons between datasets
+#   - large groups of unmatched labels
 
 
-class Singleton(object):
-    def __new__(cls, *args, **kw):
-        if not hasattr(cls, "_instance"):
-            orig = super(Singleton, cls)
-            cls._instance = orig.__new__(cls)
-        return cls._instance
-
-
-class BaseMapper(Singleton):
+class BaseMapper:
     """Abstract base class for mappers."""
 
-    _mappings = {}
+    _CACHE = {}
 
-    def __init__(self):
-        pass
+    def __init__(self, *datasets, verbose=True):
+        self.verbose = verbose
+        self._stale = True
+        self.datasets = []
+        self.add_dataset(*datasets)
 
     def __repr__(self):
-        s = f"{self.type} with {len(self)} cached mappings(s)"
+        s = f"{self.type} with {len(self)} datasets"
         if len(self):
             s += ":"
-            for datasets, map in self._mappings.items():
-                s += f"\n  {datasets}: {len(map)} neurons"
+            for ds in self.datasets:
+                s += f"\n  {type(ds)}"
         return s
 
     def __len__(self):
-        return len(self._mappings)
+        return len(self.datasets)
 
     def __str__(self):
         return self.__repr__()
@@ -110,6 +108,134 @@ class BaseMapper(Singleton):
     @property
     def type(self):
         return str(type(self))[:-2].split(".")[-1]
+
+    def add_dataset(self, *datasets, skip_existing=True):
+        """Add dataset(s)."""
+        for ds in datasets:
+            # We expect either an instance of a dataset or a dataset type
+            if isinstance(ds, DataSet):
+                dstype = type(ds)
+            elif issubclass(ds, DataSet):
+                dstype = ds
+                ds = ds()  # initialise the dataset
+            else:
+                raise TypeError(f'Expected dataset(s), got "{type(ds)}"')
+            # Check if we already have this dataset
+            if dstype in [type(d) for d in self.datasets]:
+                if skip_existing:
+                    continue
+                else:
+                    # Pop the existing dataset
+                    self.datasets = [d for d in self.datasets if type(d) != dstype]
+                    # Mark as stale
+                    self._stale = True
+            self.datasets.append(ds)
+
+        return self
+
+    def report(self, *args, **kwargs):
+        """Print a report."""
+        if getattr(self, "verbose", False):
+            print(*args, **kwargs)
+
+    def get_mappings(self):
+        """Get mappings. Compile if necessary."""
+        if not hasattr(self, "mappings_") or self._stale:
+            self.compile()
+        return self.mappings_
+
+    def get_label_counts(self, split_sides=False, label_suspicious=True):
+        """Get label counts per dataset.
+
+        Parameters
+        ----------
+        split_sides : bool
+                      If True, will split the counts by side (if available).
+        label_suspicious : bool
+                        If True, will check for labels that are suspiciously different
+                        between datasets.
+
+        Returns
+        -------
+        counts : pd.DataFrame
+                 DataFrame with label counts per dataset.
+
+        """
+        # TODOs:
+        # - split by side
+        if not hasattr(self, "mappings_") or self._stale:
+            self.compile()
+
+        # Invert the mappings
+        labels = {l: [] for l in set(self.mappings_.values())}
+        for k, v in self.mappings_.items():
+            labels[v].append(k)
+
+        counts = pd.DataFrame()
+        counts["label"] = list(labels)
+
+        for ds in self.datasets:
+            if not split_sides:
+                this_counts = []
+                for label in counts.label.values:
+                    this_counts.append(
+                        len(
+                            [
+                                l
+                                for l in labels[label]
+                                if self.graph_.nodes[l].get("dataset", None) == ds.label
+                            ]
+                        )
+                    )
+                counts[ds.label] = this_counts
+            else:
+                # Get sides for all neurons
+                sides = ds.get_sides(None)
+                for side in set(sides.values()):
+                    # Skip side if unclear
+                    if side in (None, "", np.nan, "na"):
+                        continue
+
+                    this_counts = []
+                    for label in counts.label.values:
+                        this_counts.append(
+                            len(
+                                [
+                                    l
+                                    for l in labels[label]
+                                    if self.graph_.nodes[l].get("dataset", None)
+                                    == ds.label
+                                    and sides.get(l, None) == side
+                                ]
+                            )
+                        )
+                    counts[f"{ds.label}_{side}"] = this_counts
+
+        if label_suspicious:
+            # Check for labels that are suspiciously different between datasets
+            counts["suspicious"] = False
+            for ds1 in self.datasets:
+                ds1_cols = [c for c in counts.columns if ds1.label in c]
+                for ds2 in self.datasets:
+                    if ds1 == ds2:
+                        continue
+                    ds2_cols = [c for c in counts.columns if ds2.label in c]
+                    for c1, c2 in itertools.product(ds1_cols, ds2_cols):
+                        # Make sure we don't compare e.g. "center" with "left"
+                        c1_is_cent = any(
+                            c1.endswith(f"_{s}") for s in ("C", "M", "center")
+                        )
+                        c2_is_cent = any(
+                            c2.endswith(f"_{s}") for s in ("C", "M", "center")
+                        )
+                        if c1_is_cent != c2_is_cent:
+                            continue
+                        ratio = counts[[c1, c2]].min(axis=1) / counts[[c1, c2]].max(
+                            axis=1
+                        )
+                        counts.loc[ratio < 0.5, "suspicious"] = True
+
+        return counts
 
     def validate_dataset(self, ds):
         """Validate dataset(s)."""
@@ -124,12 +250,13 @@ class BaseMapper(Singleton):
             if not isinstance(ds, DataSet) and not issubclass(ds, DataSet):
                 raise TypeError(f'Expected dataset(s), got "{type(ds)}"')
 
-    def clear_mappings(self):
+    def clear_cache(self):
         """Clear mappings."""
-        self._mappings = {}
+        self._CACHE.clear()
+        self._stale = True
 
     @abstractmethod
-    def build_mapping(self, verbose=True):
+    def compile(self, verbose=True):
         """Build mappings between datasets.
 
         This method must:
@@ -140,46 +267,71 @@ class BaseMapper(Singleton):
 
 
 class SimpleMapper(BaseMapper):
-    """A mapper that uses simple string matching to map labels between datasets."""
+    """A mapper that uses simple string matching to map labels between datasets.
 
-    def build_mapping(self, *datasets, force_rebuild=False, verbose=True):
+    Parameters
+    ----------
+    *datasets
+                    List of datasets to map between. Alternatively, use the
+                    `.add_dataset()` method to add datasets.
+    strict :        bool
+                    If False (default), will try to establish a mapping greedily
+                    by looking for matching labels. If True, will only match labels
+                    that are meant to be match - e.g. FlyWire "cell_type" to
+                    maleCNS "flywire_type".
+    verbose :       bool
+                    If True, will print progress messages.
+    """
+
+    # Class-level cache for mappings
+    _CACHE = {}
+
+    def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
         Parameters
         ----------
-        *datasets
-                        List of datasets to map between.
         force_rebuild : bool
-                        By default, mappers cache mappings between datasets. Use this
-                        parameter to ignore any cached data and force a rebuild.
+                        By default, Mappers cache mappings between datasets. Use this
+                        parameter to ignore any cached data and force a rebuild. Also
+                        clears the cache for the individual datasets.
         verbose :       bool
                         If True, will print progress messages.
 
         """
-        # Validate datasets
-        self.validate_dataset(datasets)
+        if not self.datasets:
+            raise ValueError("No datasets to map between.")
 
         # N.B. that we really only need one dataset per dataset type! E.g. having two
         # FlyWire datasets is redundant because they will have the same labels.
         # In the future, we could implement "hemispheres", i.e. FlyWire left vs right
         # but the assumption is that the primary labels should already be the same.
-        datasets = list({type(d): d for d in datasets}.values())
+        datasets = list({type(d): d for d in self.datasets}.values())
 
         # Check if we already have a mapping for this combination of datasets
         ds_identifier = tuple(sorted([d.type for d in datasets]))
         ds_string = ", ".join([d.label for d in datasets])
-        if ds_identifier in self._mappings and not force_rebuild:
-            printv(
+        if ds_identifier in self._CACHE and not force_rebuild:
+            self.report(
                 f"Using cached across-dataset mapping for {ds_string}.",
-                verbose=verbose,
                 flush=True,
             )
-            return self._mappings[ds_identifier]
+            # Copy the mappings to the current instance
+            other = self._CACHE[ds_identifier]
+            for attr in ("mappings_",):
+                setattr(self, attr, getattr(other, attr))
 
-        printv(
+            return self
+
+        # Clear dataset caches if we're forcing a rebuild
+        # This will clear e.g. cached annotations
+        if force_rebuild:
+            for ds in self.datasets:
+                ds.clear_cache()
+
+        self.report(
             f"Building across-dataset mapping for {ds_string}... ",
             end="",
-            verbose=verbose,
             flush=True,
         )
         # Get labels for all datasets
@@ -203,12 +355,12 @@ class SimpleMapper(BaseMapper):
         }
 
         # Update labels for collapsed types
-        mappings = {k: collapse_types.get(v, v) for k, v in mappings.items()}
-        printv("Done.", verbose=verbose, flush=True)
+        self.mappings_ = {k: collapse_types.get(v, v) for k, v in mappings.items()}
+        self.report("Done.", flush=True)
 
-        self._mappings[ds_identifier] = mappings
-
-        return self._mappings[ds_identifier]
+        self._CACHE[ds_identifier] = self
+        self._stale = False
+        return self
 
 
 class GraphMapper(BaseMapper):
@@ -226,6 +378,9 @@ class GraphMapper(BaseMapper):
 
     Parameters
     ----------
+    *datasets
+                    List of datasets to map between. Alternatively, use the
+                    `.add_dataset()` method to add datasets.
     post_process :  bool
                     If True, will attempt to remove edges from the graph that are
                     not necessary for maintaining the mapping between datasets.
@@ -237,19 +392,22 @@ class GraphMapper(BaseMapper):
                     by looking for matching labels. If True, will only match labels
                     that are meant to be match - e.g. FlyWire "cell_type" to
                     maleCNS "flywire_type".
+    verbose :       bool
+                    If True, will print progress messages.
 
     """
 
-    _graphs = {}
+    # Class-level cache for mappings
+    _CACHE = {}
 
     # TODOs:
     # - use direct mappings where available (e.g. the "hb123456" hemibrain types in FlyWire)
 
-    def __init__(self, post_process=True, strict=False):
+    def __init__(self, *datasets, post_process=True, strict=False, verbose=True):
         self.post_process = post_process
         self.strict = strict
         self._synonyms = {}
-        super().__init__()
+        super().__init__(*datasets, verbose=verbose)
 
     def add_synonym(self, label, synonym):
         """Add a synonym to the mapping.
@@ -263,56 +421,64 @@ class GraphMapper(BaseMapper):
 
         """
         self._synonyms[label] = self._synonyms.get(label, set()) | {synonym}
+        # Mark as stale
+        self._stale = True
 
         return self
 
-    def build_mapping(self, *datasets, force_rebuild=False, verbose=True):
+    def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
         Parameters
         ----------
-        *datasets
-                        List of datasets to map between.
         force_rebuild : bool
-                        By default, mappers cache mappings between datasets. Use this
-                        parameter to ignore any cached data and force a rebuild.
+                        By default, Mappers cache mappings between datasets. Use this
+                        parameter to ignore any cached data and force a rebuild. Also
+                        clears the cache for the individual datasets.
         verbose :       bool
                         If True, will print progress messages.
 
         """
-        # Validate datasets
-        self.validate_dataset(datasets)
-
-        if force_rebuild:
-            for ds in datasets:
-                ds.clear_cache()
+        if not self.datasets:
+            raise ValueError("No datasets to map between.")
 
         # N.B. that we really only need one dataset per dataset type! E.g. having two
         # FlyWire datasets is redundant because they will have the same labels.
         # In the future, we could implement "hemispheres", i.e. FlyWire left vs right
-        # but the assumption is that the primary labels should already be the same.
-        datasets = list({type(d): d for d in datasets}.values())
+        # but the assumption - right or wrong - is that the primary labels should already be the same.
+        datasets = list({type(d): d for d in self.datasets}.values())
 
-        # Check if we already have a mapping for this combination of datasets
+        # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
+        # Build a hashable identifier for this instance
+        self_identifier = (ds_identifier, self.post_process, self.strict)
         ds_string = ", ".join([d.type for d in datasets])
-        if tuple(ds_identifier) in self._mappings and not force_rebuild:
-            printv(
+        if self_identifier in self._CACHE and not force_rebuild:
+            self.report(
                 f"Using cached across-dataset mapping for {ds_string}.",
-                verbose=verbose,
                 flush=True,
             )
-            return self._mappings[ds_identifier]
+            # Copy the mappings to the current instance
+            other = self._CACHE[self_identifier]
+            for attr in ("mappings_", "graph_", "spurious_edges_"):
+                setattr(self, attr, getattr(other, attr))
+
+            return self
+
+        # Clear dataset caches if we're forcing a rebuild
+        # This will clear e.g. cached annotations
+        if force_rebuild:
+            for ds in self.datasets:
+                ds.clear_cache()
 
         # If we only have one dataset we only need to get to *a* label and that label
         # should ideally be the most granular label within reach. So for example,
         # a male CNS neuron might have type='MeTu4e' and `flywire_type='MeTu4'` in
         # which case we need to make sure to map to 'MeTu4e' and not 'MeTu4'.
         if len(datasets) < 2:
-            printv(
+            self.report(
                 f"Building mapping for {ds_string}... ",
                 end="",
-                verbose=verbose,
                 flush=True,
             )
             ds = datasets[0]
@@ -338,16 +504,21 @@ class GraphMapper(BaseMapper):
                 G, filter_edge=lambda e1, e2: (e1, e2) in keep_edges
             ).copy()
 
-            self._mappings[ds_identifier] = mappings
-            self._graphs[ds_identifier] = G_trimmed
+            # Store the mappings and the graph
+            self.mappings_ = mappings
+            self.graph_ = G_trimmed
+            self.spurious_edges_ = []  # no spurious edges in this case
 
-            printv("Done.", verbose=verbose, flush=True)
-            return self._mappings[ds_identifier]
+            # Cache the results
+            self._CACHE[self_identifier] = self
 
-        printv(
+            self.report("Done.", flush=True)
+            self._stale = False
+            return self
+
+        self.report(
             f"Building across-dataset mapping for {ds_string}... ",
             end="",
-            verbose=verbose,
             flush=True,
         )
 
@@ -494,14 +665,14 @@ class GraphMapper(BaseMapper):
 
                 # Add the difference to the spurious edges
                 for edge in set(sg.edges) - sg_keep_edges:
-                    # Translate any groups into individual body IDs
+                    # Translate any groups back into individual body IDs
                     if str(edge[0]).startswith("group"):
-                        source = [int(s) for s in sg.nodes[edge[0]]['ids'].split(",")]
+                        source = [int(s) for s in sg.nodes[edge[0]]["ids"].split(",")]
                     else:
                         source = [edge[0]]
 
                     if str(edge[1]).startswith("group"):
-                        target = [int(s) for s in sg.nodes[edge[1]]['ids'].split(",")]
+                        target = [int(s) for s in sg.nodes[edge[1]]["ids"].split(",")]
                     else:
                         target = [edge[1]]
 
@@ -511,76 +682,60 @@ class GraphMapper(BaseMapper):
 
             # Remove edges
             if len(self.spurious_edges_):
-                printv(
+                self.report(
                     f"\nRemoving {len(self.spurious_edges_)} potentially spurious edges from the graph.",
-                    verbose=verbose, flush=True
+                    flush=True,
                 )
                 # Note to self: in a previous version I had issues that some edges were not removed
                 # Turned out that was because I collected the edges from the *undirected* graph
                 # but tried to remove them from the *directed* graph which silently failed.
-                # We have since changed the code such that the G_trimmed is always undirected.
+                # We have since changed the code such that `G_trimmed` is always undirected.
                 G_trimmed.remove_edges_from(self.spurious_edges_)
 
         # Generate mappings between labels
-        mappings_labels = {}
+        mappings = {}
         labels = {
             n
             for n in G_trimmed.nodes
             if G_trimmed.nodes[n].get("type", None) != "neuron"
         }
+        # Iterate over all connected components
         for ccn in nx.connected_components(G_trimmed):
-            # Note to future self:
-            # We should probably introduce some weight metric when finding the paths earlier
-            # Then we could use the weights within the connected component to suss out potential
-            # pathological cases - i.e. where a single weight-1 edge connects two otherwise strongly
-            # connected subgraphs within this connecte component.
-
             # Now we have to make sure this connected component is actually connected to all datasets
-            missing = {
-                ds
-                for ds in datasets
-                if not any(G.nodes[n].get(ds.label, False) for n in ccn)
-            }
-            if any(missing):
+            skip = False
+            for ds in datasets:
+                if not any(G_trimmed.nodes[n].get(ds.label, False) for n in ccn):
+                    skip = True
+                    break
+            if skip:
                 continue
 
-            # Make a new label for this connected component
-            # (make sure we first split compound labels)
+            # Generate a new label for this connected component
             ccn_labels = ccn & labels
-
+            # Make sure we first split compound labels
             new_label = ",".join(
                 set([l for label in ccn_labels for l in label.split(",")])
             )
 
-            # Add the new label to the mappings
-            for l in ccn_labels:
-                mappings_labels[l] = new_label
+            # Assign the new label to the neurons in this connected component
+            for l in ccn - ccn_labels:
+                mappings[l] = new_label
 
-        # Now apply the new labels to the neurons
-        mappings = {}
-        for n in neurons:
-            try:
-                # Check all neighbors of this neuron to see
-                # if they have a label in the mappings_labels
-                for p in G.neighbors(n):
-                    if p in mappings_labels:
-                        mappings[n] = mappings_labels[p]
-                        break
-            except StopIteration:
-                pass
+        # Store the results
+        self.mappings_ = mappings
+        self.graph_ = G_trimmed
 
-        self._mappings[ds_identifier] = mappings
-        self._graphs[ds_identifier] = G_trimmed
+        # Cache the results
+        self._CACHE[self_identifier] = self
 
-        printv("Done.", verbose=verbose, flush=True)
+        self.report("Done.", flush=True)
 
-        printv(
-            f"Found {len(set(self._mappings[ds_identifier].values()))} unique labels covering {len(self._mappings[ds_identifier])} neurons.",
-            verbose=verbose,
+        self.report(
+            f"Found {len(set(self.mappings_.values()))} unique labels covering {len(self.mappings_)} neurons.",
             flush=True,
         )
-
-        return self._mappings[ds_identifier]
+        self._stale = False
+        return self
 
 
 def sanity_check_mapping(G, verbose=True):
@@ -612,7 +767,7 @@ def sanity_check_mapping(G, verbose=True):
     return strange
 
 
-def show_label_subgraph(G, labels, show_neurons=True, layout="shell"):
+def show_label_subgraph(x, labels, show_neurons=True, layout="shell"):
     """Quick visualization of a subgraph of the label graph.
 
     Parameters
@@ -623,6 +778,13 @@ def show_label_subgraph(G, labels, show_neurons=True, layout="shell"):
         List of labels to include in the subgraph.
 
     """
+    if isinstance(x, GraphMapper):
+        G = x.graph_
+    elif isinstance(x, (nx.Graph, nx.DiGraph)):
+        G = x
+    else:
+        raise ValueError("Unknown input.")
+
     if not isinstance(labels, (list, set, tuple)):
         labels = [labels]
 

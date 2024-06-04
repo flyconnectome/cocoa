@@ -103,7 +103,9 @@ class MaleCNS(DataSet):
             else:
                 backfill_types = ("flywire_type", "hemibrain_type", "group", "instance")
         elif not isinstance(backfill_types, (list, tuple)):
-            raise ValueError("`backfill_types` must be a str, a list or tuple or `None`")
+            raise ValueError(
+                "`backfill_types` must be a str, a list or tuple or `None`"
+            )
         self.backfill_types = backfill_types
 
         if rois is not None:
@@ -170,6 +172,8 @@ class MaleCNS(DataSet):
         _get_mcns_meta.cache_clear()
         print("Cleared cached male CNS data.")
 
+        return self
+
     def get_annotations(self):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
@@ -210,6 +214,26 @@ class MaleCNS(DataSet):
 
         return np.array([types.get(i, i) for i in x])
 
+    def get_sides(self, x):
+        """Fetch labels for given IDs.
+
+        Parameters
+        ----------
+        x :         int | list | np.ndarray | None
+                    Body IDs to fetch labels for. If `None`, will return all labels.
+
+        """
+        # Fetch all sides for this version
+        sides = _get_mcns_sides(source=self.meta_source)
+
+        if x is None:
+            return sides
+
+        if not isinstance(x, (list, np.ndarray)):
+            x = [x]
+        x = np.asarray(x).astype(np.int64)
+
+        return np.array([sides.get(i, i) for i in x])
     def get_ngl_scene(self, in_flywire_space=False):
         client = _get_clio_client("CNS")
         seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
