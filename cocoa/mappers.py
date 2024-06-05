@@ -910,25 +910,40 @@ def chunks(iterable, n):
         yield x
 
 
-def split_check_recursive(G, partitions=None, check_ratio=True):
+def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
     """Recursively split the graph in two until split is invalid.
 
     Invalid split means that one of the connected components does not
     contain neurons from all datasets.
+
+    Parameters
+    ----------
+    G : nx.Graph
+        The graph to split.
+    partitions : list, optional
+        List of partitions to append to. This is just to pass a list into the
+        recursive function to collect the partitions. You should not pass this.
+    check_ratio : bool, optional
+        If True, will check if the ratio between datasets is similar in the
+        split connected components.
+    verbose : bool, optional
+        If True, will print informative messages. Helpful for debugging.
 
     """
     if partitions is None:
         partitions = []
 
     # Find out which datasets are present
-    ds = {
-        G.nodes[n].get("dataset", None)
-        for n in G.nodes
-        if G.nodes[n].get("type", None) == "neuron"
-    }
+    neurons = [n for n in G.nodes if G.nodes[n].get("type", None) == "neuron"]
+    ds = {G.nodes[n]["dataset"] for n in neurons}
 
     # Get the ratio between datasets in the full set
-    n_ds = {ds: sum([G.nodes[n].get(f"{ds}_in", 0) for n in G.nodes]) for ds in ds}
+    # Note: we're checking the "size" of each node representing a group of neurons ("group_xyz").
+    # We do NOT want to use the labels (e.g. "PI1,PI2,PI3") because their "{dataset}_in" properties
+    # have not been updated.
+    n_ds = {d: 0 for d in ds}
+    for n in neurons:
+        n_ds[G.nodes[n]["dataset"]] += G.nodes[n].get("size", 0)
 
     try:
         ratio = max(n_ds.values()) / min(n_ds.values())
@@ -938,37 +953,41 @@ def split_check_recursive(G, partitions=None, check_ratio=True):
     # Split in two. Note: this may not actually split into two connected components!
     split = nx.community.greedy_modularity_communities(G, best_n=2, weight="weight")
 
+    printv(f"Trying to split {G.nodes} into {len(split)} groups ({n_ds} = {ratio}).", verbose=verbose, flush=True)
+
     # Check if the split is valid
     valid = len(split) > 1
-    for neuron_set in split:
+    for group in split:
         # If the set of datasets in this connected component is not the same as the
         # set of datasets in the entire graph, we must reject the split
+        neurons = [n for n in group if G.nodes[n].get("type", None) == "neuron"]
         if not ds == {
             G.nodes[n].get("dataset", None)
-            for n in neuron_set
-            if G.nodes[n].get("type", None) == "neuron"
+            for n in neurons
         }:
             valid = False
-            # print(f"Invalid split {neuron_set} of {G.nodes}.")
+            printv(f"  Rejected: invalid group {list(group)}.", flush=True, verbose=verbose)
             break
 
         # Check if the ratios between datasets are similar
         if ratio and check_ratio:
-            n_ds = {
-                ds: sum([G.nodes[n].get(f"{ds}_in", 0) for n in neuron_set])
-                for ds in ds
-            }
+            n_ds = {d: 0 for d in ds}
+            n_ds = {d: 0 for d in ds}
+            for n in neurons:
+                n_ds[G.nodes[n]["dataset"]] += G.nodes[n].get("size", 0)
+
             ratio2 = max(n_ds.values()) / min(n_ds.values())
             # Reject split if the ratios get much worse
             if (ratio2 / ratio > 2.5) or (ratio / ratio2 > 2.5):
                 valid = False
-                # print(f"Invalid ratio for split {neuron_set} of {G.nodes}: {ratio2} vs {ratio}.")
+                printv(f"  Rejected: invalid ratios for group {list(group)} ({n_ds} = {ratio2} vs {ratio}).", flush=True, verbose=verbose)
                 break
 
     if not valid:
         partitions.append(set(G.nodes))
     else:
+        printv("  Split accepted.", verbose=verbose, flush=True)
         for neuron_set in split:
-            split_check_recursive(G.subgraph(neuron_set).copy(), partitions)
+            split_check_recursive(G.subgraph(neuron_set).copy(), partitions=partitions)
 
     return partitions
