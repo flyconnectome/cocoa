@@ -1,4 +1,8 @@
+# TODOs:
+# - add parameter to use the "untyped" fraction in the clustering?
+
 import re
+import functools
 
 import pandas as pd
 import numpy as np
@@ -20,60 +24,10 @@ from .datasets import FlyWire, Hemibrain, MaleCNS
 from .datasets.core import DataSet
 from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
-from .utils import make_iterable, req_compile, printv
+from .utils import make_iterable, printv
 from .distance import calculate_distance
 from .mappers import GraphMapper, BaseMapper
 
-"""
-Code Example:
-
-# Step 1: Define datasets
->>> import cocoa as co
->>> ds1 = co.datasets.FlyWireRHS(ids=[1213, 12321])
->>> ds2 = co.datasets.FlyWireLHS(ids=[1213, 12321])
-
-# Step 2: Plot
->>> co.cosine_plot(ds1, ds2, ...)
-
-# Alternatively if there is a preset
->>> co.cosine_plot({'FAFB_RHS': [1213, 12321],
-...                 'FAFB_LHS': [1211, 22321],
-...                 'hemibrain_RHS': [3212, 32313]})
-
->>> # `edges_...` is a dataframe from some other source
->>> ds1, ds2 = co.DataSet('RHS'), co.DataSet('LHS')
->>> ds1.add_edges(edges_left)
->>> ds2.add_edges(edges_right)
->>> # Add (optional) common labels
->>> ds1.add_labels(labels_dict1)
->>> ds2.add_labels(labels_dict2)
->>> # Combine
->>> cb = co.Clustering(ds1, ds2)
->>> # Alternatively: cb = ds1 + ds2
->>> # Get some stats
->>> cb.report()
-Clustering containing 2 datasets: "RHS", "LHS"
-
-"RHS" contains 4231 edges for 142 neurons.
-"LHS" contains 4532 edges for 140 neurons.
-
-"RHS" and "LHS" have 50 shared labels.
-
-Other methods:
-
-Clustering.label_summary()  # for each shared label get a summary
-Clustering.coverage()  # report a coverage for each neuron
-Clustering.coverage_plot()
-Clustering.connectivity_vector(use_labels=True)
-Clustering.connectivity_distance()
-Clustering.clustermap(interactive=True)
-Clustering.dendrogram()
-
-For precomputed co-clustering (e.g. from NBLAST scores) use `co.Cluster`
-
-For graph matching use `co.GraphMatcher([])`
-
-"""
 
 __all__ = ["Clustering", "generate_clustering"]
 
@@ -83,9 +37,29 @@ DISTS_DTYPE = np.float32
 VECT_DTYPE = np.uint16
 
 
-class Clustering:
-    """Normalizes, combines and co-clusters datasets."""
 
+def req_compile(func):
+    """Check if we need to compile connectivity."""
+
+    @functools.wraps(func)
+    def inner(*args, **kwargs):
+        if not hasattr(args[0], "dists_"):
+            args[0].compile()
+        return func(*args, **kwargs)
+
+    return inner
+
+
+class Clustering:
+    """Normalizes, combines and co-clusters datasets.
+
+    Parameters
+    ----------
+    datasets :  DataSet | list of DataSet, optional
+                One or more datasets to include in the clustering.
+                Alternatively, datasets can be added using the `add_dataset`.
+
+    """
     def __init__(self, *datasets):
         self._datasets = []
         self.add_dataset(datasets)

@@ -1,5 +1,4 @@
 import six
-import functools
 
 import numpy as np
 import pandas as pd
@@ -52,18 +51,6 @@ def make_iterable(x, force_type=None) -> np.ndarray:
         x = list(x)
 
     return np.asarray(x, dtype=force_type)
-
-
-def req_compile(func):
-    """Check if we need to compile connectivity."""
-
-    @functools.wraps(func)
-    def inner(*args, **kwargs):
-        if not hasattr(args[0], "dists_"):
-            args[0].compile()
-        return func(*args, **kwargs)
-
-    return inner
 
 
 def collapse_neuron_nodes(G):
