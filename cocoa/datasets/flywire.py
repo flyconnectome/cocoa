@@ -394,6 +394,80 @@ class FlyWire(DataSet):
 
         return G
 
+    def compile_adjacency(self, collapse_types=False):
+        """Compile adjacency between all neurons in this dataset."""
+        # Make sure we're working on integers
+        x = np.asarray(self.neurons).astype(np.int64)
+
+        if self.materialization == "auto":
+            self.materialization = mat = flywire.utils.find_mat_version(x)
+        else:
+            mat = self.materialization
+            timestamp = None if mat == "live" else f"mat_{mat}"
+
+            il = flywire.is_latest_root(x, timestamp=timestamp)
+            if any(~il):
+                raise ValueError(
+                    "Some of the root IDs does not exist for the specified "
+                    f"materialization ({mat}): {x[~il]}"
+                )
+
+        if self.cn_file is not None:
+            cn = pd.read_feather(self.cn_file).rename(
+                {
+                    "pre_pt_root_id": "pre",
+                    "post_pt_root_id": "post",
+                    "syn_count": "weight",
+                },
+                axis=1,
+            )
+            adj = cn[cn.pre.isin(x) & cn.post.isin(x)]
+            adj = adj.groupby(["pre", "post"], as_index=False).weight.sum()
+        else:
+            adj = flywire.get_adjacency(
+                sources=x,
+                filtered=True,
+                min_score=50,
+                progress=False,
+                materialization=mat,
+            )
+
+        # For grouping by type simply replace pre and post IDs with their types
+        # -> we'll aggregate later
+        if self.use_types:
+            if hasattr(self, "types_"):
+                fw_types = self.types_
+            else:
+                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+
+            fw_sides = _get_fw_sides(mat, live=self.live_annot)
+
+            adj = _add_types(
+                adj,
+                types=fw_types,
+                col=("pre", "post"),
+                expand_morphology_types=True,
+                sides=None if not self.use_sides else fw_sides,
+                sides_rel=True if self.use_sides == "relative" else False,
+            )
+
+        self.adj_ = adj
+
+        if collapse_types:
+            self.adj_ = self.adj_.groupby(["pre", "post"], as_index=False).weight.sum()
+
+        # Keep track of whether this used types and side
+        self.adj_types_used_ = self.use_types
+        self.adj_sides_used_ = self.use_sides
+
+        # Translate morphology types into connectivity types
+        # This makes it easier to align with hemibrain
+        # self.connectivity_.columns = _morphology_to_connectivity_types(
+        #    self.connectivity_.columns
+        # )
+
+        return self
+
     def compile(self, collapse_types=False):
         """Compile edges."""
         # Make sure we're working on integers
