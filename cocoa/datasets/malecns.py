@@ -155,12 +155,18 @@ class MaleCNS(DataSet):
         else:
             meta = self.get_annotations()
             if right_only:
+                meta = meta.loc[meta.somaSide.isin(("R", "right")),
+                    "bodyId",
+                ]
+
+            if exact:
+                ids = meta.loc[(meta.type == x) | (meta.flywire_type == x), "bodyId"].values.astype(np.int64)
+            else:
                 ids = meta.loc[
-                    (meta.type == x) & meta.side.isin(("R", "right")),
+                    (meta.type.str.contains(x, case=False, na=False))
+                    | (meta.flywire_type.str.contains(x, case=False, na=False)),
                     "bodyId",
                 ].values.astype(np.int64)
-            else:
-                ids = meta.loc[(meta.type == x), "bodyId"].values.astype(np.int64)
 
         return np.unique(np.array(ids, dtype=np.int64))
 
