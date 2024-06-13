@@ -99,14 +99,14 @@ class Hemibrain(DataSet):
                 else:
                     filt = annot.type.str.contains(
                         x, na=False
-                    ) | annot.morphology_type.str.contains(x, na=False)
+                    ) | annot.morphology_type.str.contains(x, na=False, case=False)
             else:
                 # If this is e.g. "type:L1-5"
                 col, val = x.split(":")
                 if exact:
                     filt = annot[col] == val
                 else:
-                    filt = annot[col].str.contains(val, na=False)
+                    filt = annot[col].str.contains(val, na=False, case=False)
 
             if isinstance(sides, str):
                 filt = filt & (annot.side == sides)

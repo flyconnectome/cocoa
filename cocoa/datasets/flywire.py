@@ -157,8 +157,8 @@ class FlyWire(DataSet):
                     filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
                 else:
                     filt = annot.cell_type.str.contains(
-                        x, na=False
-                    ) | annot.hemibrain_type.str.contains(x, na=False)
+                        x, na=False, case=False
+                    ) | annot.hemibrain_type.str.contains(x, na=False, case=False)
             else:
                 # If this is e.g. "cell_class:L1-5"
                 col, val = x.split(":")
