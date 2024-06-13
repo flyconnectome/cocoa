@@ -539,6 +539,25 @@ def _add_types(
     edges
 
     """
+    if isinstance(col, (list, tuple, np.ndarray)):
+        # Make only one copy
+        if not inplace:
+            edges = edges.copy()
+        # Add types to all columns
+        for c in col:
+            edges = _add_types(
+                edges,
+                types,
+                c,
+                drop_untyped=drop_untyped,
+                sides=sides,
+                sides_rel=sides_rel,
+                expand_morphology_types=expand_morphology_types,
+                ignore_cn_types=ignore_cn_types,
+                inplace=True,
+            )
+        return edges
+
     assert col in ("pre", "post")
     other = {"pre": "post", "post": "pre"}[col]
 
