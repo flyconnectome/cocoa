@@ -60,6 +60,22 @@ class DataSet(ABC):
         )
         return self
 
+    def drop_neurons(self, x, **kwargs):
+        """Drop neurons from dataset.
+
+        Parameters
+        ----------
+        x :     str | int | list thereof
+                Something that can be parsed into IDs. Details depend on the
+                dataset.
+
+        """
+        if not len(self.neurons):
+            return self
+
+        to_drop = self._add_neurons(x, **kwargs)
+        self.neurons = np.setdiff1d(self.neurons, to_drop)
+        return self
     def get_ngl_scene(self):
         return NotImplementedError
 
