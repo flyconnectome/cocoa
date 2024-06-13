@@ -117,6 +117,40 @@ class Hemibrain(DataSet):
 
         return np.unique(np.array(ids, dtype=np.int64))
 
+    @classmethod
+    def hemisphere(cls, hemisphere, label=None, **kwargs):
+        """Generate a dataset for given hemibrain hemisphere.
+
+        Parameters
+        ----------
+        hemisphere :    str
+                        "left" or "right"
+        label :         str, optional
+                        Label for the dataset. If not provided will generate
+                        one based on the hemisphere.
+        **kwargs
+            Additional keyword arguments for the dataset.
+
+        Returns
+        -------
+        ds :            Hemibrain
+                        A dataset for the specified hemisphere.
+
+        """
+        assert hemisphere in ("left", "right"), f"Invalid hemisphere '{hemisphere}'"
+
+        hemisphere = {"left": "L", "right": "R"}[hemisphere]
+
+        if label is None:
+            label = f"Hemibrain({hemisphere[0]})"
+        ds = cls(label=label, **kwargs)
+
+        ann = ds.get_annotations()
+        to_add = ann[(ann.side == hemisphere)].bodyId.values
+        ds.add_neurons(to_add)
+
+        return ds
+
     def copy(self):
         """Make copy of dataset."""
         x = type(self)(label=self.label)

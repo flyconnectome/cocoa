@@ -28,6 +28,19 @@ itable = None
 otable = None
 
 
+# Neurons with cell bodies in the central brain
+CENTRAL_BRAIN_SUPER_CLASSES = (
+    "central",
+    "central_tbc",
+    "endocrine",
+    "visual_projection",
+    "visual_projection_tbc",
+    "visual_centrifugal",
+    "visual_centrifugal_tbc",
+    "descending",
+)
+
+
 class MaleCNS(DataSet):
     """Male CNS dataset.
 
@@ -150,6 +163,44 @@ class MaleCNS(DataSet):
                 ids = meta.loc[(meta.type == x), "bodyId"].values.astype(np.int64)
 
         return np.unique(np.array(ids, dtype=np.int64))
+
+    @classmethod
+    def hemisphere(cls, hemisphere, label=None, **kwargs):
+        """Generate a dataset for given MCNS (central brain) hemisphere.
+
+        We will include neurons with cell bodies in the central brain.
+
+        Parameters
+        ----------
+        hemisphere :    str
+                        "left" or "right"
+        label :         str, optional
+                        Label for the dataset. If not provided will generate
+                        one based on the hemisphere.
+        **kwargs
+            Additional keyword arguments for the dataset.
+
+        Returns
+        -------
+        ds :            MaleCNS
+                        A dataset for the specified hemisphere.
+
+        """
+        assert hemisphere in ("left", "right"), f"Invalid hemisphere '{hemisphere}'"
+
+        hemisphere = {"left": "L", "right": "R"}[hemisphere]
+
+        if label is None:
+            label = f"MaleCNS({hemisphere[0]})"
+        ds = cls(label=label, **kwargs)
+
+        ann = ds.get_annotations()
+        to_add = ann[
+            (ann.somaSide == hemisphere) & ann['class'].isin(CENTRAL_BRAIN_SUPER_CLASSES)
+        ].bodyId.values
+        ds.add_neurons(to_add)
+
+        return ds
 
     def copy(self):
         """Make copy of dataset."""

@@ -25,6 +25,15 @@ __all__ = ["FlyWire"]
 itable = None
 otable = None
 
+# Neurons with cell bodies in the central brain
+CENTRAL_BRAIN_SUPER_CLASSES = (
+    "central",
+    "endocrine",
+    "visual_projection",
+    "visual_centrifugal",
+    "descending",
+)
+
 
 @lru_cache
 def check_filename_mat(mat, filename):
@@ -165,6 +174,42 @@ class FlyWire(DataSet):
             ids = annot.loc[filt, "root_id"].unique().astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))
+
+    @classmethod
+    def hemisphere(cls, hemisphere, label=None, **kwargs):
+        """Generate a dataset for given FlyWire (central brain) hemisphere.
+
+        We will include neurons with cell bodies in the central brain.
+
+        Parameters
+        ----------
+        hemisphere :    str
+                        "left" or "right"
+        label :         str, optional
+                        Label for the dataset. If not provided will generate
+                        one based on the hemisphere.
+        **kwargs
+            Additional keyword arguments for the dataset.
+
+        Returns
+        -------
+        ds :            FlyWire
+                        A dataset for the specified hemisphere.
+
+        """
+        assert hemisphere in ("left", "right"), f"Invalid hemisphere '{hemisphere}'"
+
+        if label is None:
+            label = f"FlyWire({hemisphere[0].upper()})"
+        ds = cls(label=label, **kwargs)
+
+        ann = ds.get_annotations()
+        to_add = ann[
+            (ann.side == hemisphere) & ann.super_class.isin(CENTRAL_BRAIN_SUPER_CLASSES)
+        ].root_id.values
+        ds.add_neurons(to_add)
+
+        return ds
 
     def copy(self):
         """Make copy of dataset."""
