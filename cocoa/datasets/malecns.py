@@ -59,6 +59,8 @@ class MaleCNS(DataSet):
                         all available columns.
     exclude_bad_types : bool
                         Whether to exclude known bad types such as "KC" or "FB".
+    exclude_autapses :  bool
+                        Whether to exclude autapses from the connectivity vectors.
     use_side :          bool | 'relative'
                         Only relevant if `group_by_type=True`:
                          - if `True`, will split cell types into left/right/center
@@ -89,6 +91,7 @@ class MaleCNS(DataSet):
         use_types=False,
         backfill_types=("flywire_type", "hemibrain_type"),
         exclude_bad_types=True,
+        exclude_autapses=True,
         use_sides=False,
         rois=None,
         meta_source="clio",
@@ -105,6 +108,7 @@ class MaleCNS(DataSet):
         self.meta_source = meta_source
         self.cn_object = cn_object
         self.exclude_bad_types = exclude_bad_types
+        self.exclude_autapses = exclude_autapses
 
         if isinstance(backfill_types, str):
             backfill_types = [backfill_types]
@@ -219,6 +223,11 @@ class MaleCNS(DataSet):
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
         x.exclude_bad_types = self.exclude_bad_types
+        x.exclude_autapses = self.exclude_autapses
+        x.meta_source = self.meta_source
+        x.cn_object = self.cn_object
+        x.rois = self.rois
+
 
         return x
 
@@ -517,6 +526,9 @@ class MaleCNS(DataSet):
                 client=client,
             )
         adj.rename({"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True)
+
+        if self.exclude_autapses:
+            adj = adj[adj.pre != adj.post].copy()
 
         if self.use_types:
             adj = _add_types(
