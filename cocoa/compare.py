@@ -331,33 +331,94 @@ class Comparison:
         return axes
 
     @req_compile
-    def plot_pairwise_edgeweights(self, threshold=50, errorbar=("pi", 50)):
+    def plot_pairwise_edgeweights(self, subset=None, threshold=50, envelope=("pi", 50), fillna=True, **kwargs):
         """Plot pairwise edge weights.
 
         The envelopes represent the 50th percentile.
 
         Parameters
         ----------
+        subset :    list of str, optional
+                    Subset of datasets to plot. Default to all.
         threshold : int, optional
                     Threshold for edge weights to plot. Typically, the lower
                     range of edge weights is more interesting since the data
                     tends to get very sparse at higher weights (which causes scraggly
                     lines). Default to 50.
+        envelope :  tuple | list of tuples, optional
+                    Envelope to plot. Default to ("pi", 50) which is the 50th percentile.
+                    Can be a list of tuples in which case multiple error envelopes will be plotted.
+        fillna :    bool, optional
+                    Fill NaN values (i.e. edges missing in one of the datasets) with 0. If False,
+                    edges that are not present in both datasets of a given pairwise comparison are
+                    ignored. Default to True.
+        **kwargs
+                    Keyword arguments are passed through to seaborn.Lineplot
 
         """
         fig, ax = plt.subplots(figsize=(5, 5))
 
+        if subset is None:
+            subset = self.adj_.columns.values
+
+        if not isinstance(subset, (list, np.ndarray)):
+            raise TypeError(f"Expected `subset` to be list or array, got {type(subset)}")
+
+        if len(subset) < 2:
+            raise ValueError("Need at least two datasets in `subset` to compare.")
+
+        if isinstance(envelope, tuple):
+            envelope = [envelope]
+
+        err_kws = kwargs.pop("err_kws", {})
+
         # Plot pairwise comparisons
-        for c1, c2 in combinations(self.adj_.columns, 2):
+        for c1, c2 in combinations(subset, 2):
+            this = self.adj_[self.adj_[c1] <= threshold]
+            if fillna:
+                this = this.fillna(0)
             ax = sns.lineplot(
-                data=self.adj_[self.adj_[c1] <= threshold],
+                data=this,
                 x=c1,
                 y=c2,
                 label=f"{c1} v {c2}",
                 ax=ax,
-                errorbar=errorbar,
-                err_kws=dict(alpha=0.05),
+                errorbar=None,
+                **kwargs
+                #errorbar=envelope,
+                #err_kws=dict(alpha=0.05),
             )
+            # Here we're doing exactly what seaborn does internally to plot the error envelope
+            # but for (potentially) multiple envelopes
+            if envelope is not None:
+                # Get the data (expected to just be an x and y column)
+                sub_data = this[[c1, c2]].copy().rename(columns={c1: "x", c2: "y"})
+                orient, other = "x", "y"  # we're
+                sort_cols = ["x", other]
+                sub_data = sub_data.sort_values(sort_cols)
+                grouped = sub_data.groupby(orient, sort=True)
+
+                boot_kws = {}  # modify settings here
+                _err_kws=dict(alpha=0.05)
+                _err_kws.update(err_kws)
+                for eb in envelope:
+                    # Initialise the aggregator with desired CI
+                    agg = sns._statistics.EstimateAggregator(estimator='mean', errorbar=eb, **boot_kws)
+                    # Aggregate. This will add an `ymin` and `ymax` column which we can use to plot the error envelope
+                    this_sub_data = (
+                        grouped
+                        .apply(agg, other, **sns._compat.groupby_apply_include_groups(False))
+                        .reset_index()
+                    )
+                    # Get the last line color (should be the one from our last mean)
+                    line_color = ax.get_lines()[-1].get_color()
+                    # Plot the envelope
+                    func = {"x": ax.fill_between, "y": ax.fill_betweenx}[orient]
+                    func(
+                        this_sub_data[orient],
+                        this_sub_data[f"{other}min"], this_sub_data[f"{other}max"],
+                        color=line_color, **_err_kws
+                    )
 
         # Add x=y line
         ax.plot(
