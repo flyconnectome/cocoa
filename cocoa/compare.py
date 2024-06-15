@@ -67,8 +67,7 @@ class Comparison:
         cl = Comparison()
         cl._datasets = list(self.datasets)
         for prop in (
-            "edges_",
-            "cn_frac_",
+            "adj_",
         ):
             if hasattr(self, prop):
                 setattr(cl, prop, getattr(self, prop).copy())
@@ -524,8 +523,3 @@ class Comparison:
         ax.set_ylabel('probability to find edge in N datasets')
 
         return ax
-
-    @req_compile
-    def plot_correlation_grid(self, axes=None):
-        """Plot correlation plots"""
-        pass
