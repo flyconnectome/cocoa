@@ -225,9 +225,18 @@ class Comparison:
 
     @req_compile
     def plot_correlation_matrix(
-        self, ax=None, square=True, annot=True, cmap="coolwarm"
+        self, ax=None, square=True, annot=True, cmap="coolwarm", triangle='lower'
     ):
         """Plot correlation matrix of edge weights."""
+        # TODO:
+        # - add other metrics such as cosine similarity
+        if triangle == 'lower':
+            mask = np.triu(np.ones_like(self.adj_.corr(), dtype=bool), k=1)
+        elif triangle == 'upper':
+            mask = np.tril(np.ones_like(self.adj_.corr(), dtype=bool), k=-1)
+        else:
+            mask=None
+
         ax = sns.heatmap(
             # N.B. that we need to fill NaNs with 0 here, otherwise those will be
             # ignored by the correlation calculation
@@ -238,6 +247,7 @@ class Comparison:
             cmap=cmap,
             annot=annot,
             cbar=False,
+            mask=mask,
             ax=ax,
             square=square,
         )
