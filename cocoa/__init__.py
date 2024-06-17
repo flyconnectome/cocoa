@@ -7,6 +7,7 @@ from .cluster import *
 from .plotting import *
 from .datasets import *
 from .cluster_utils import *
+from .compare import *
 from .mappers import SimpleMapper, GraphMapper
 
 
