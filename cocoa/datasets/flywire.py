@@ -394,7 +394,7 @@ class FlyWire(DataSet):
 
         return G
 
-    def compile_adjacency(self, collapse_types=False):
+    def compile_adjacency(self, collapse_types=False, collapse_rois=True):
         """Compile adjacency between all neurons in this dataset."""
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(np.int64)
@@ -418,19 +418,24 @@ class FlyWire(DataSet):
                     "pre_pt_root_id": "pre",
                     "post_pt_root_id": "post",
                     "syn_count": "weight",
+                    "neuropil": "roi",
                 },
                 axis=1,
             )
             adj = cn[cn.pre.isin(x) & cn.post.isin(x)]
-            adj = adj.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             adj = flywire.get_adjacency(
                 sources=x,
                 filtered=True,
+                square=False,
                 min_score=50,
                 progress=False,
+                neuropils=not collapse_rois,
                 materialization=mat,
             )
+
+        if collapse_rois:
+            adj = adj.groupby(["pre", "post"], as_index=False).weight.sum()
 
         # For grouping by type simply replace pre and post IDs with their types
         # -> we'll aggregate later
@@ -578,7 +583,9 @@ class FlyWire(DataSet):
             raise ValueError("`upstream` and `downstream` must not both be False")
 
         if collapse_types:
-            self.edges_ = self.edges_.groupby(["pre", "post"], as_index=False).weight.sum()
+            self.edges_ = self.edges_.groupby(
+                ["pre", "post"], as_index=False
+            ).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types

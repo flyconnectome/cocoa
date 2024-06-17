@@ -298,8 +298,8 @@ class Hemibrain(NeuprintDataSet):
 
         return G
 
-    def compile_adjacency(self, collapse_types=False):
-        """Compile adjacency between all neurons in this dataset."""
+    def compile(self):
+        """Compile connectivity vector."""
         client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
@@ -312,62 +312,7 @@ class Hemibrain(NeuprintDataSet):
             if hasattr(self, "types_"):
                 types = self.types_
             else:
-                types = _get_hemibrain_types(
-                    add_side=False,
-                    backfill_types=self.backfill_types,
-                    source=self.meta_source,
-                )
-
-        if isinstance(self.cn_object, pd.DataFrame):
-            adj = self.cn_object[
-                self.cn_object.bodyId_post.isin(x) & self.cn_object.bodyId_pre.isin(x)
-            ]
-            if self.rois is not None:
-                adj = adj[adj.roi.isin(self.rois)]
-            adj = adj.copy()  # avoid SettingWithCopyWarning
-        else:
-            _, adj = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x, client=client),
-                targets=neu.NeuronCriteria(bodyId=x, client=client),
-                rois=self.rois,
-                client=client,
-            )
-        adj.rename({"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True)
-
-        if self.use_types:
-            adj = _add_types(
-                adj,
-                types=types,
-                col=("pre", "post"),
-                sides=None
-                if not self.use_sides
-                else _get_hb_sides(source=self.meta_source),
-                sides_rel=True if self.use_sides == "relative" else False,
-            )
-
-        self.adj_ = adj
-
-        if collapse_types:
-            self.adj_ = self.adj_.groupby(["pre", "post"], as_index=False).weight.sum()
-
-        # Keep track of whether this used types and side
-        self.adj_types_used_ = self.use_types
-        self.adj_sides_used_ = self.use_sides
-
-        return self
-
-    def compile(self):
-        """Compile connectivity vector."""
-        client = self.neuprint_client
-
-        x = self.neurons.astype(np.int64)
-
-        if not len(x):
-            raise ValueError("No body IDs provided")
-
-        if self.use_types:
-            # Types is a {bodyId: type} dictionary
-            types = _get_hemibrain_types(add_side=False, live=self.live_annot)
+                types = _get_hemibrain_types(add_side=False, live=self.live_annot)
             # For cases where {'AVLP123': 'AVLP123,AVLP323'} we need to change
             # # {bodyId: 'AVLP123'} -> {bodyId: 'AVLP123,AVLP323'}
             # types = {k: collapse_types.get(v, v) for k, v in types.items()}
@@ -389,7 +334,9 @@ class Hemibrain(NeuprintDataSet):
                     us,
                     types=types,
                     col="pre",
-                    sides=None if not self.use_sides else _get_hb_sides(live=self.live_annot),
+                    sides=None
+                    if not self.use_sides
+                    else _get_hb_sides(live=self.live_annot),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -407,7 +354,9 @@ class Hemibrain(NeuprintDataSet):
                     ds,
                     types=types,
                     col="post",
-                    sides=None if not self.use_sides else _get_hb_sides(live=self.live_annot),
+                    sides=None
+                    if not self.use_sides
+                    else _get_hb_sides(live=self.live_annot),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 

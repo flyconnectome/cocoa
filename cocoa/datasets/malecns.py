@@ -208,7 +208,8 @@ class MaleCNS(NeuprintDataSet):
 
         ann = ds.get_annotations()
         to_add = ann[
-            (ann.somaSide == hemisphere) & ann['class'].isin(CENTRAL_BRAIN_SUPER_CLASSES)
+            (ann.somaSide == hemisphere)
+            & ann["class"].isin(CENTRAL_BRAIN_SUPER_CLASSES)
         ].bodyId.values
         ds.add_neurons(to_add)
 
@@ -229,7 +230,6 @@ class MaleCNS(NeuprintDataSet):
         x.meta_source = self.meta_source
         x.cn_object = self.cn_object
         x.rois = self.rois
-
 
         return x
 
@@ -302,6 +302,7 @@ class MaleCNS(NeuprintDataSet):
         x = np.asarray(x).astype(np.int64)
 
         return np.array([sides.get(i, i) for i in x])
+
     def get_ngl_scene(self, in_flywire_space=False):
         client = _get_clio_client("CNS")
         seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
@@ -493,8 +494,8 @@ class MaleCNS(NeuprintDataSet):
 
         return G
 
-    def compile_adjacency(self, collapse_types=False):
-        """Compile adjacency between all neurons in this dataset."""
+    def compile(self, collapse_types=False, collapse_rois=True):
+        """Compile connectivity vector."""
         client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
@@ -512,64 +513,6 @@ class MaleCNS(NeuprintDataSet):
                     backfill_types=self.backfill_types,
                     source=self.meta_source,
                 )
-
-        if isinstance(self.cn_object, pd.DataFrame):
-            adj = self.cn_object[
-                self.cn_object.bodyId_post.isin(x) & self.cn_object.bodyId_pre.isin(x)
-            ]
-            if self.rois is not None:
-                adj = adj[adj.roi.isin(self.rois)]
-            adj = adj.copy()  # avoid SettingWithCopyWarning
-        else:
-            _, adj = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x, client=client),
-                targets=neu.NeuronCriteria(bodyId=x, client=client),
-                rois=self.rois,
-                client=client,
-            )
-        adj.rename({"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True)
-
-        if self.exclude_autapses:
-            adj = adj[adj.pre != adj.post].copy()
-
-        if self.use_types:
-            adj = _add_types(
-                adj,
-                types=types,
-                col=("pre", "post"),
-                sides=None
-                if not self.use_sides
-                else _get_mcns_sides(source=self.meta_source),
-                sides_rel=True if self.use_sides == "relative" else False,
-            )
-
-        self.adj_ = adj
-
-        if collapse_types:
-            self.adj_ = self.adj_.groupby(["pre", "post"], as_index=False).weight.sum()
-
-        # Keep track of whether this used types and side
-        self.adj_types_used_ = self.use_types
-        self.adj_sides_used_ = self.use_sides
-
-        return self
-
-    def compile(self, collapse_types=False):
-        """Compile connectivity vector."""
-        client = self.neuprint_client
-
-        x = self.neurons.astype(np.int64)
-
-        if not len(x):
-            raise ValueError("No body IDs provided")
-
-        if self.use_types:
-            # Types is a {bodyId: type} dictionary
-            types = _get_mcns_types(
-                add_side=False,
-                backfill_types=self.backfill_types,
-                source=self.meta_source,
-            )
 
         # Fetch hemibrain vectors
         if self.upstream:
@@ -590,6 +533,10 @@ class MaleCNS(NeuprintDataSet):
             us.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
+            # Collapse ROIs here before we (potentially) add types
+            if collapse_rois:
+                us = us.groupby(["pre", "post"], as_index=False).weight.sum()
+
             if self.use_types:
                 us = _add_types(
                     us,
@@ -620,6 +567,10 @@ class MaleCNS(NeuprintDataSet):
             ds.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
+            # Collapse ROIs here before we (potentially) add types
+            if collapse_rois:
+                ds = ds.groupby(["pre", "post"], as_index=False).weight.sum()
+
             if self.use_types:
                 ds = _add_types(
                     ds,
@@ -628,27 +579,20 @@ class MaleCNS(NeuprintDataSet):
                     sides=None if not self.use_sides else _get_mcns_meta(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
-            # print("Done!")
 
         if self.upstream and self.downstream:
-            self.edges_ = pd.concat(
-                (
-                    us.groupby(["pre", "post"], as_index=False).weight.sum(),
-                    ds.groupby(["pre", "post"], as_index=False).weight.sum(),
-                ),
-                axis=0,
-            ).drop_duplicates()
+            self.edges_ = pd.concat((us, ds), axis=0).drop_duplicates()
         elif self.upstream:
-            self.edges_ = us.groupby(["pre", "post"], as_index=False).weight.sum()
+            self.edges_ = us
         elif self.downstream:
-            self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
+            self.edges_ = ds
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
 
         if collapse_types:
-            self.edges_ = self.edges_.groupby(
-                ["pre", "post"], as_index=False
-            ).weight.sum()
+            # Make sure to keep "roi" if it still exits
+            cols = [c for c in ["pre", "post", "roi"] if c in self.edges_.columns]
+            self.edges_ = self.edges_.groupby(cols, as_index=False).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types
