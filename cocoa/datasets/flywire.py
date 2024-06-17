@@ -103,6 +103,8 @@ class FlyWire(DataSet):
 
     """
 
+    _roi_col = "neuropil"
+
     def __init__(
         self,
         label="FlyWire",
