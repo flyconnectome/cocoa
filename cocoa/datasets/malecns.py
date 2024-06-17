@@ -7,7 +7,7 @@ import networkx as nx
 
 from pathlib import Path
 
-from .core import DataSet
+from ._neuprint import NeuprintDataSet
 from .scenes import _get_mcns_scene
 from .ds_utils import (
     _get_mcns_meta,
@@ -41,7 +41,7 @@ CENTRAL_BRAIN_SUPER_CLASSES = (
 )
 
 
-class MaleCNS(DataSet):
+class MaleCNS(NeuprintDataSet):
     """Male CNS dataset.
 
     Parameters
@@ -126,7 +126,7 @@ class MaleCNS(DataSet):
         self.backfill_types = backfill_types
 
         if rois is not None:
-            self.rois = _parse_neuprint_roi(rois, client=_get_neuprint_mcns_client())
+            self.rois = _parse_neuprint_roi(rois, client=self.neuprint_client)
         else:
             self.rois = None
 
@@ -140,8 +140,10 @@ class MaleCNS(DataSet):
             elif not isinstance(self.cn_object, pd.DataFrame):
                 raise ValueError("`cn_object` must be a path or a DataFrame")
 
-    def _add_neurons(self, x, exact=False, right_only=False):
-        """Turn `x` into male CNS body IDs."""
+    @property
+    def neuprint_client(self):
+        """Return neuprint client."""
+        return _get_neuprint_mcns_client()
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
@@ -493,7 +495,7 @@ class MaleCNS(DataSet):
 
     def compile_adjacency(self, collapse_types=False):
         """Compile adjacency between all neurons in this dataset."""
-        client = _get_neuprint_mcns_client()
+        client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
 
@@ -554,7 +556,7 @@ class MaleCNS(DataSet):
 
     def compile(self, collapse_types=False):
         """Compile connectivity vector."""
-        client = _get_neuprint_mcns_client()
+        client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
 

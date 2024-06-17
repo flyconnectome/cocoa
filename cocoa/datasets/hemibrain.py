@@ -3,7 +3,7 @@ import pandas as pd
 import neuprint as neu
 import networkx as nx
 
-from .core import DataSet
+from ._neuprint import NeuprintDataSet
 from .scenes import HEMIBRAIN_MINIMAL_SCENE
 from .ds_utils import (
     _get_hemibrain_meta,
@@ -21,7 +21,7 @@ itable = None
 otable = None
 
 
-class Hemibrain(DataSet):
+class Hemibrain(NeuprintDataSet):
     """Hemibrain dataset.
 
     Parameters
@@ -116,6 +116,11 @@ class Hemibrain(DataSet):
             ids = annot.loc[filt, "bodyId"].values.astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))
+
+    @property
+    def neuprint_client(self):
+        """Return neuprint client."""
+        return _get_neuprint_hemibrain_client()
 
     @classmethod
     def hemisphere(cls, hemisphere, label=None, **kwargs):
@@ -220,6 +225,7 @@ class Hemibrain(DataSet):
         x = np.asarray(x).astype(np.int64)
 
         return np.array([sides.get(i, i) for i in x])
+
     def label_exists(self, x):
         """Check if labels exists in dataset."""
         x = np.asarray(x)
@@ -235,7 +241,9 @@ class Hemibrain(DataSet):
 
         return np.isin(x, list(G.nodes))
 
-    def compile_label_graph(self, which_neurons="all", collapse_neurons=False, strict=False):
+    def compile_label_graph(
+        self, which_neurons="all", collapse_neurons=False, strict=False
+    ):
         """Compile label graph.
 
         For the hemibrain, this means:
@@ -292,7 +300,7 @@ class Hemibrain(DataSet):
 
     def compile_adjacency(self, collapse_types=False):
         """Compile adjacency between all neurons in this dataset."""
-        client = _get_neuprint_hemibrain_client()
+        client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
 
@@ -350,7 +358,7 @@ class Hemibrain(DataSet):
 
     def compile(self):
         """Compile connectivity vector."""
-        client = _get_neuprint_hemibrain_client()
+        client = self.neuprint_client
 
         x = self.neurons.astype(np.int64)
 
