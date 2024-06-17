@@ -542,6 +542,8 @@ class MaleCNS(NeuprintDataSet):
                 )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
+            if self.exclude_autapses:
+                us = us[us.bodyId_pre != us.bodyId_post].copy()
             us.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
@@ -576,6 +578,8 @@ class MaleCNS(NeuprintDataSet):
                 )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
+            if self.exclude_autapses:
+                ds = ds[ds.bodyId_pre != ds.bodyId_post].copy()
             ds.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
