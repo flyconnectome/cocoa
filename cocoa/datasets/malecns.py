@@ -144,35 +144,47 @@ class MaleCNS(NeuprintDataSet):
     def neuprint_client(self):
         """Return neuprint client."""
         return _get_neuprint_mcns_client()
+
+    def _add_neurons(self, x, exact=True, sides=None):
+        """Turn `x` into maleCNS body IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
-        if isinstance(x, str) and "," in x:
+        if not exact and isinstance(x, str) and "," in x:
             x = x.split(",")
+
+        if isinstance(x, pd.Series):
+            x = x.values
 
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(
-                    ids, self._add_neurons(t, exact=exact, right_only=right_only)
-                )
+                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
         elif _is_int(x):
-            ids = [np.int64(x)]
+            ids = [int(x)]
         else:
-            meta = self.get_annotations()
-            if right_only:
-                meta = meta.loc[meta.somaSide.isin(("R", "right")),
-                    "bodyId",
-                ]
+            annot = self.get_annotations()
 
-            if exact:
-                ids = meta.loc[(meta.type == x) | (meta.flywire_type == x), "bodyId"].values.astype(np.int64)
+            if ":" not in x:
+                if exact:
+                    filt = (annot.type == x) | (annot.flywire_type == x)
+                else:
+                    filt = annot.type.str.contains(
+                        x, na=False, case=False
+                    ) | annot.flywire_type.str.contains(x, na=False, case=False)
             else:
-                ids = meta.loc[
-                    (meta.type.str.contains(x, case=False, na=False))
-                    | (meta.flywire_type.str.contains(x, case=False, na=False)),
-                    "bodyId",
-                ].values.astype(np.int64)
+                # If this is e.g. "cell_class:L1-5"
+                col, val = x.split(":")
+                if exact:
+                    filt = annot[col] == val
+                else:
+                    filt = annot[col].str.contains(val, na=False)
+
+            if isinstance(sides, str):
+                filt = filt & (annot.side == sides)
+            elif isinstance(sides, (tuple, list, np.ndarray)):
+                filt = filt & annot.side.isin(sides)
+            ids = annot.loc[filt, "bodyId"].unique().astype(np.int64).tolist()
 
         return np.unique(np.array(ids, dtype=np.int64))
 
