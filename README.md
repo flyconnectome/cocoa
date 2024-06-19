@@ -1,24 +1,29 @@
 ![cocoa](docs/_static/cocoa.svg)
 
-A Python library for comparative connectomics analyses.
+# cocoa
 
-`cocoa` implements various dataset-agnostic as well as dataset-specific methods
+`cocoa` is a Python library for **co**mparative **co**nnectomics **a**nalyses.
+
+It implements various dataset-agnostic as well as dataset-specific methods
 for matching, co-clustering and cell typing.
 
 Currently implemented are:
 
 1. FlyWire
 2. hemibrain
-3. maleCNS
+3. maleCNS (not public yet)
 
-On the TODO list: FANC, MANC
+On the TODO list:
+- female adult nerve cord (FANC)
+- male adult never cord (MANC)
+
+Feel free to open an Issue or a PR if you want another dataset added.
 
 ## Install
 
 ```bash
 pip3 install git+https://github.com/flyconnectome/cocoa.git
 ```
-
 
 ### Other requirements
 
@@ -83,4 +88,3 @@ That may be enough in cases where you don't need fine-grained control.
 ...            hb=['SLP001', 'SLP002']
 ...         ).compile()
 ```
-

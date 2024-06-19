@@ -31,13 +31,12 @@ MCNS_BAD_TYPES = (
     "Ascending Interneuron",
     "Delta",
     "P1_L candidate",
+    "P1",
     "LT",
+    "mAL",
     "MeMe",
-    "PFGs",
     "Mi",
-    "VT",
     "ML",
-    "EL",
     "FB",
     "Dm",
     "DNp",
@@ -45,8 +44,21 @@ MCNS_BAD_TYPES = (
     "OL",
     "T",
     "Y",
-    "TuBu"
+    "TuBu",
 )
+FLYWIRE_LIVE_COLUMNS = [
+    "flow",
+    "root_id",
+    "supervoxel_id",
+    "super_class",
+    "cell_class",
+    "cell_type",
+    "hemibrain_type",
+    "malecns_type",
+    "ito_lee_hemilineage",
+    "side",
+    "status",
+]
 
 
 def download_cache_file(url, force_reload="auto", verbose=True):
@@ -125,17 +137,33 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
         {"root_id": np.int64, "supervoxel_id": np.int64}
     )
 
-    if mat not in ("630", 630, None):
+    col = f"root_{mat}" if mat not in ("live", "current") else "root_id"
+
+    if mat in ("live", "current") or col not in table.columns:
+        if col not in table.columns:
+            table[col] = table.root_id
+
         if mat in ("live", "current"):
             timestamp = None
         else:
             timestamp = f"mat_{mat}"
+
         to_update = ~flywire.is_latest_root(
-            table.root_id, timestamp=timestamp, progress=False
+            table[col], timestamp=timestamp, progress=False
         )
-        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
+
+        table.loc[to_update, col] = flywire.supervoxels_to_roots(
             table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
         )
+
+        # Save the updated root IDs
+        table.to_csv(fp, sep="\t", index=False)
+
+        # Make sure we have a column called `root_id` with the correct values
+        if col != "root_id":
+            table["root_id"] = table[col]
+            table.drop(col, axis=1, inplace=True)
+
     print("Done.")
     return table
 
@@ -148,23 +176,21 @@ def _load_live_flywire_annotations(mat=None):
         end="",
         flush=True,
     )
-
-    cols = [
-        "root_id",
-        "supervoxel_id",
-        "super_class",
-        "cell_class",
-        "cell_type",
-        "hemibrain_type",
-        "ito_lee_hemilineage",
-        "side",
-    ]
     info = _get_table(which="info")
     optic = _get_table(which="optic")
     table = pd.concat(
-        (info.loc[info.flow.notnull(), cols], optic.loc[optic.flow.notnull(), cols]),
+        (
+            info.loc[info.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+            optic.loc[optic.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+        ),
         axis=0,
     ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
+
+    # Keep only neurons
+    table = table[table.flow.notnull()]
+
+    # Drop duplicates
+    table = table[~table.status.isin(["duplicate", "bad_nucleus"])].copy()
 
     if mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
@@ -246,7 +272,7 @@ def _get_hemibrain_meta(live=False):
         meta = _load_live_hemibrain_annotations()
     else:
         meta = _load_static_hemibrain_annotations()
-    return meta
+    return meta.astype({"bodyId": np.int64})
 
 
 @lru_cache
@@ -254,25 +280,26 @@ def _get_mcns_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
         client = _get_clio_client("CNS")
-        return clio.fetch_annotations(None, client=client)
+        ann = clio.fetch_annotations(None, client=client)
+
+        # Currently, Clio has both a `rootSide` and `root_side` column
+        # Only the later is useful.
+        ann = ann.drop("rootSide", errors="ignore", axis=1)
+
+        return ann.rename(
+            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
+            axis=1,
+        )
     else:
         client = _get_neuprint_mcns_client()
         return neu.fetch_neurons(
-            neu.NeuronCriteria(
-                statusLabel=(
-                    "Traced",
-                    "Roughly traced",
-                    "Prelim Roughly traced",
-                    "Anchor",
-                ),
-                client=client
-            ),
+            neu.NeuronCriteria(client=client),
             client=client,
         )[0]
 
 
 @lru_cache
-def _get_neuprint_client():
+def _get_neuprint_hemibrain_client():
     return neu.Client("https://neuprint.janelia.org", dataset="hemibrain:v1.2.1")
 
 
@@ -291,43 +318,32 @@ def _get_fw_types(mat, add_side=False, live=False):
     """Fetch types from `info`.
 
     - cached
-    - uses `cell_type` first and then falls back to `hemibrain_type`
+    - uses `cell_type` first and then falls back to `hemibrain_type`;
+      if available, will also use `malecns_type`.
     - maps to given materialization version
 
     """
-    cols = ["supervoxel_id", "hemibrain_type", "cell_type"]
-    if add_side:
-        cols += ["side"]
-
     if not live:
         table = _load_static_flywire_annotations(mat=mat)
     else:
         table = _load_live_flywire_annotations(mat=mat)
-    typed = table[table.hemibrain_type.notnull() | table.cell_type.notnull()]
+
+    # Backfill types
+    type_cols = ("cell_type", "malecns_type", "hemibrain_type")
+    table["type"] = None
+    for col in type_cols:
+        if col in table.columns:
+            table["type"] = table["type"].fillna(table[col])
+    typed = table[table.type.notnull()]
 
     if add_side:
-        has_ct = typed.cell_type.notnull()
-        typed.loc[has_ct, "cell_type"] = [
-            f"{t}_{s}"
-            for t, s in zip(typed.cell_type.values[has_ct], typed.side.values[has_ct])
-        ]
-        has_ht = typed.hemibrain_type.notnull()
-        typed.loc[has_ht, "hemibrain_type"] = [
-            f"{t}_{s}"
-            for t, s in zip(
-                typed.hemibrain_type.values[has_ht], typed.side.values[has_ht]
-            )
+        typed = typed.copy()  # Avoid SettingWithCopyWarnings
+        # Add side to type
+        typed["type"] = [
+            f"{t}_{s}" for t, s in zip(typed.type.values, typed.side.values)
         ]
 
-    type_dict = (
-        typed[typed.hemibrain_type.notnull()]
-        .set_index("root_id")
-        .hemibrain_type.to_dict()
-    )
-    type_dict.update(
-        typed[typed.cell_type.notnull()].set_index("root_id").cell_type.to_dict()
-    )
-    return type_dict
+    return typed.set_index("root_id").type.to_dict()
 
 
 @lru_cache
@@ -351,9 +367,25 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
 
 @lru_cache
 def _get_mcns_types(
-    add_side=False, backfill_types=False, exclude_bad_types=True, source="clio"
+    add_side=False,
+    backfill_types=False,
+    exclude_bad_types=True,
+    source="clio",
 ):
-    """Fetch male CNS types from clio."""
+    """Fetch male CNS types from clio.
+
+    Parameters
+    ----------
+    add_side :      bool
+                    If True, will add soma side to the type.
+    backfill_types : list, optional
+                    List of columns to backfill types from.
+    exclude_bad_types : bool
+                    If True, will exclude known bad types.
+    source :        "clio" | "neuprint"
+                    Source of the annotations.
+
+    """
     assert source in (
         "clio",
         "neuprint",
@@ -370,43 +402,47 @@ def _get_mcns_types(
         meta.loc[meta.type.isin(MCNS_BAD_TYPES), "type"] = None
 
     if backfill_types:
-        if "flywire_type" in meta.columns:
-            meta["type"] = meta.type.fillna(meta.flywire_type)
+        for col in backfill_types:
+            if col not in meta.columns:
+                continue
 
-        if "hemibrain_type" in meta.columns:
-            meta["type"] = meta.type.fillna(meta.hemibrain_type)
+            # For "group" and "instance" we need to do a bit of clean-up first
+            if col == "group":
+                # `group` is a body ID of one of the neurons in that group (e.g. 10063)
+                # However, that identity neuron often doesn't have the group itself
+                # so we need to manually fix that
+                groups = (
+                    meta[meta.group.notnull()]
+                    .set_index("bodyId")["group"]
+                    .astype(int)
+                    .astype(str)
+                    .to_dict()
+                )
+                # For each {bodyID: group} also add {group: group}
+                groups.update({int(v): v for v in groups.values()})
 
-        if "group" in meta.columns:
-            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
-            # However, that identity neuron often doesn't have the group itself
-            # so we need to manually fix that
-            groups = (
-                meta[meta.group.notnull()]
-                .set_index("bodyId")["group"]
-                .astype(int)
-                .astype(str)
-                .to_dict()
-            )
-            # For each {bodyID: group} also add {group: group}
-            groups.update({v: v for v in groups.values()})
+                # Add a prefix to the groups
+                groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
 
-            miss = meta.type.isnull()
-            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
-        if "instance" in meta.columns:
-            # Instance is a bit of a mixed bag: we can get things like
-            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
-            # which we will ignore for now
+                miss = meta.type.isnull()
+                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
+            if col == "instance":
+                # Instance is a bit of a mixed bag: we can get things like
+                # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
+                # which we will ignore for now
 
-            # First get {ID}_L types
-            num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
-            num_inst.columns = ["instance"]
-            num_inst["bodyId"] = meta.bodyId.values
-            num_inst = num_inst[num_inst.instance.notnull()]
-            num_inst = num_inst.set_index("bodyId").instance.to_dict()
-            num_inst.update({v: v for v in num_inst.values()})
+                # First get {ID}_L types
+                num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
+                num_inst.columns = ["instance"]
+                num_inst["bodyId"] = meta.bodyId.values
+                num_inst = num_inst[num_inst.instance.notnull()]
+                num_inst = num_inst.set_index("bodyId").instance.to_dict()
+                num_inst.update({v: v for v in num_inst.values()})
 
-            miss = meta.type.isnull()
-            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
+                miss = meta.type.isnull()
+                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
+
+            meta["type"] = meta.type.fillna(meta[col])
 
     # Drop untyped
     meta = meta[meta.type.notnull()]
@@ -435,6 +471,19 @@ def _get_hb_sides(live=False):
     """Fetch hemibrain sides from flytable."""
     meta = _get_hemibrain_meta(live=live)
     meta["bodyId"] = meta.bodyId.astype(int)
+
+    # Drop neurons without a side
+    meta = meta[meta.side.notnull()]
+
+    return meta.set_index("bodyId").side.to_dict()
+
+
+@lru_cache
+def _get_mcns_sides(source="clio"):
+    """Fetch male CNS sides."""
+    meta = _get_mcns_meta(source=source).rename(
+        {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
+    )
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
@@ -490,6 +539,25 @@ def _add_types(
     edges
 
     """
+    if isinstance(col, (list, tuple, np.ndarray)):
+        # Make only one copy
+        if not inplace:
+            edges = edges.copy()
+        # Add types to all columns
+        for c in col:
+            edges = _add_types(
+                edges,
+                types,
+                c,
+                drop_untyped=drop_untyped,
+                sides=sides,
+                sides_rel=sides_rel,
+                expand_morphology_types=expand_morphology_types,
+                ignore_cn_types=ignore_cn_types,
+                inplace=True,
+            )
+        return edges
+
     assert col in ("pre", "post")
     other = {"pre": "post", "post": "pre"}[col]
 
@@ -611,8 +679,8 @@ def _parse_neuprint_roi(roi, client):
 
     def collect_primary_rois(hierarchy, rois=[]):
         """Collect primary ROIs from a super-ROI hierarchy."""
-        if hierarchy['name'] in client.primary_rois:
-            rois.append(hierarchy['name'])
+        if hierarchy["name"] in client.primary_rois:
+            rois.append(hierarchy["name"])
 
         for sub in hierarchy.get("children", []):
             _ = collect_primary_rois(sub, rois)

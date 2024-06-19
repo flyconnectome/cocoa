@@ -11,5 +11,7 @@ dash
 dash-bootstrap-components
 fastcluster
 neuprint-python
+networkx
 tanglegram @ git+https://github.com/schlegelp/tanglegram@master
 clio-py @ git+https://github.com/schlegelp/clio-py@main
+ipywidgets  # apparently tqdm complains if this isn't installed and we're in a Jupyter environment
