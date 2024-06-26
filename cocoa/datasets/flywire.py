@@ -22,9 +22,6 @@ from ..utils import collapse_neuron_nodes
 
 __all__ = ["FlyWire"]
 
-itable = None
-otable = None
-
 # Neurons with cell bodies in the central brain
 CENTRAL_BRAIN_SUPER_CLASSES = (
     "central",
@@ -103,6 +100,7 @@ class FlyWire(DataSet):
 
     """
 
+    _flybrains_space = "FLYWIRE"
     _roi_col = "neuropil"
 
     def __init__(
@@ -300,7 +298,9 @@ class FlyWire(DataSet):
         G = self.compile_label_graph(which_neurons="all")
 
         # Remove the neurons themselves
-        G.remove_nodes_from([k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"])
+        G.remove_nodes_from(
+            [k for k, v in nx.get_node_attributes(G, "type").items() if v == "neuron"]
+        )
 
         return np.isin(x, list(G.nodes))
 
@@ -313,7 +313,9 @@ class FlyWire(DataSet):
         print("Cleared cached FlyWire data.")
 
     # Should this be cached and/or turned into a classmethod?
-    def compile_label_graph(self, which_neurons="all", collapse_neurons=False, strict=False):
+    def compile_label_graph(
+        self, which_neurons="all", collapse_neurons=False, strict=False
+    ):
         """Compile label graph.
 
         For FlyWire, this means:
@@ -338,7 +340,10 @@ class FlyWire(DataSet):
             A graph with neurons and labels as nodes.
 
         """
-        assert which_neurons in ("self", "all"), "`which_neurons` must be 'self' or 'all'"
+        assert which_neurons in (
+            "self",
+            "all",
+        ), "`which_neurons` must be 'self' or 'all'"
 
         ann = self.get_annotations()
 
@@ -351,8 +356,10 @@ class FlyWire(DataSet):
         # Add dataset prefix to labels
         if strict:
             ann = ann.copy()  # avoid SettingWithCopyWarning
-            for col, name in zip(("cell_type", "hemibrain_type", "malecns_type"),
-                                 ("flywire", "hemibrain", "malecns")):
+            for col, name in zip(
+                ("cell_type", "hemibrain_type", "malecns_type"),
+                ("flywire", "hemibrain", "malecns"),
+            ):
                 if col not in ann.columns:
                     continue
                 notnull = ann[col].notnull()
@@ -365,7 +372,7 @@ class FlyWire(DataSet):
         G.add_nodes_from(ann.root_id, type="neuron")
 
         # Order of labels
-        cols = ['malecns_type', 'cell_type', 'hemibrain_type']
+        cols = ["malecns_type", "cell_type", "hemibrain_type"]
         for col in cols:
             # Skip if this column doesn't exist
             if col not in ann.columns:
@@ -378,8 +385,10 @@ class FlyWire(DataSet):
             # Take care of compound types
             comp = this[
                 this[col].str.contains(",", na=False)
-                & ~this[col].str.startswith("(", na=False)  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
-                & ~this[col].str.startswith("CB.", na=False) # ignore e.g. "CB.FB3,4A9"
+                & ~this[col].str.startswith(
+                    "(", na=False
+                )  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
+                & ~this[col].str.startswith("CB.", na=False)  # ignore e.g. "CB.FB3,4A9"
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):

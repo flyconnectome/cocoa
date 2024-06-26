@@ -3,7 +3,7 @@ import pandas as pd
 import neuprint as neu
 import networkx as nx
 
-from ._neuprint import NeuprintDataSet
+from .janelia import JaneliaDataSet
 from .scenes import HEMIBRAIN_MINIMAL_SCENE
 from .ds_utils import (
     _get_hemibrain_meta,
@@ -17,11 +17,8 @@ from ..utils import collapse_neuron_nodes
 
 __all__ = ["Hemibrain"]
 
-itable = None
-otable = None
 
-
-class Hemibrain(NeuprintDataSet):
+class Hemibrain(JaneliaDataSet):
     """Hemibrain dataset.
 
     Parameters
@@ -53,6 +50,8 @@ class Hemibrain(NeuprintDataSet):
     """
 
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE
+    _flybrains_space = "JRCFIB2018Fraw"
+    _type_columns = ["type", "morphology_type"]
 
     def __init__(
         self,

@@ -3,13 +3,13 @@ import numpy as np
 import pandas as pd
 
 from .core import DataSet
-from .ds_utils import _add_types
+from .ds_utils import _add_types, _is_int
 
 from abc import ABC, abstractproperty
 
 
-class NeuprintDataSet(DataSet, ABC):
-    """Base class for datasets that use the neuprint API."""
+class JaneliaDataSet(DataSet, ABC):
+    """Base class for Janelia datasets which use the neuprint/clio API."""
 
     _roi_col = "roi"
 
@@ -19,6 +19,53 @@ class NeuprintDataSet(DataSet, ABC):
     @abstractproperty
     def neuprint_client(self):
         pass
+
+    def _add_neurons(self, x, exact=True, sides=None):
+        """Turn `x` into body IDs."""
+        if isinstance(x, type(None)):
+            return np.array([], dtype=np.int64)
+
+        if not exact and isinstance(x, str) and "," in x:
+            x = x.split(",")
+
+        if isinstance(x, pd.Series):
+            x = x.values
+
+        if isinstance(x, (list, np.ndarray, set, tuple)):
+            ids = np.array([], dtype=np.int64)
+            for t in x:
+                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
+        elif _is_int(x):
+            ids = [int(x)]
+        else:
+            annot = self.get_annotations()
+
+            if ":" not in x:
+                filt = np.zeros(len(annot), dtype=bool)
+                for c in self._type_columns:
+                    if c not in annot.columns:
+                        continue
+                    if exact:
+                        filt = filt | (annot[c] == x).values
+                    else:
+                        filt = filt | annot.type.str.contains(
+                            x, na=False, case=False
+                        )
+            else:
+                # If this is e.g. "cell_class:L1-5"
+                col, val = x.split(":")
+                if exact:
+                    filt = annot[col] == val
+                else:
+                    filt = annot[col].str.contains(val, na=False)
+
+            if isinstance(sides, str):
+                filt = filt & (annot.side == sides)
+            elif isinstance(sides, (tuple, list, np.ndarray)):
+                filt = filt & annot.side.isin(sides)
+            ids = annot.loc[filt, "bodyId"].unique().astype(np.int64).tolist()
+
+        return np.unique(np.array(ids, dtype=np.int64))
 
     def get_roi_completeness(self):
         """Get ROI completeness for all neurons in this dataset."""

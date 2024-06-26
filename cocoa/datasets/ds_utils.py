@@ -41,6 +41,7 @@ MCNS_BAD_TYPES = (
     "Dm",
     "DNp",
     "FC",
+    "FS",
     "OL",
     "T",
     "Y",
@@ -283,7 +284,7 @@ def _get_mcns_meta(source):
         ann = clio.fetch_annotations(None, client=client)
 
         # Currently, Clio has both a `rootSide` and `root_side` column
-        # Only the later is useful.
+        # Only the later is really useful.
         ann = ann.drop("rootSide", errors="ignore", axis=1)
 
         return ann.rename(
@@ -299,13 +300,39 @@ def _get_mcns_meta(source):
 
 
 @lru_cache
-def _get_neuprint_hemibrain_client():
-    return neu.Client("https://neuprint.janelia.org", dataset="hemibrain:v1.2.1")
+def _get_manc_meta(source):
+    assert source in ("clio", "neuprint")
+    if source == "clio":
+        client = _get_clio_client("MANC")
+        ann = clio.fetch_annotations(None, client=client)
+
+        return ann.rename(
+            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
+            axis=1,
+        )
+    else:
+        client = _get_neuprint_manc_client()
+        return neu.fetch_neurons(
+            neu.NeuronCriteria(client=client),
+            client=client,
+        )[0]
+
+
+@lru_cache
+def _get_neuprint_hemibrain_client(version="1.2.1"):
+    version = version[1:] if version.startswith("v") else version
+    return neu.Client("https://neuprint.janelia.org", dataset=f"hemibrain:v{version}")
 
 
 @lru_cache
 def _get_neuprint_mcns_client():
     return neu.Client("https://neuprint-cns.janelia.org", dataset="cns")
+
+
+@lru_cache
+def _get_neuprint_manc_client(version="1.2.1"):
+    version = version[1:] if version.startswith("v") else version
+    return neu.Client("https://neuprint.janelia.org", dataset=f"manc:v{version}")
 
 
 @lru_cache
@@ -353,7 +380,7 @@ def _get_hemibrain_types(add_side=False, use_morphology_type=False, live=False):
     meta["bodyId"] = meta.bodyId.astype(int)
 
     # Overwrite cell type
-    if use_morphology_type:
+    if use_morphology_type and "morphology_type" in meta.columns:
         meta = meta.copy()
         meta["type"] = meta.morphology_type
 
@@ -372,7 +399,7 @@ def _get_mcns_types(
     exclude_bad_types=True,
     source="clio",
 ):
-    """Fetch male CNS types from clio.
+    """Fetch male CNS types from /neuPrint.
 
     Parameters
     ----------
@@ -392,57 +419,15 @@ def _get_mcns_types(
     ), f'`source` must be clio or neuprint, got "{source}"'
     print(f"Caching male CNS `type` annotations from {source}... ", end="", flush=True)
 
+    # This function makes sure that columns have the same name regardless of source
     meta = _get_mcns_meta(source=source)
-
-    # Clio returns a "bodyid" column, neuprint a "bodyId" column
-    meta = meta.rename({"bodyid": "bodyId"}, axis=1)
 
     # Drop some known bad types
     if exclude_bad_types:
         meta.loc[meta.type.isin(MCNS_BAD_TYPES), "type"] = None
 
     if backfill_types:
-        for col in backfill_types:
-            if col not in meta.columns:
-                continue
-
-            # For "group" and "instance" we need to do a bit of clean-up first
-            if col == "group":
-                # `group` is a body ID of one of the neurons in that group (e.g. 10063)
-                # However, that identity neuron often doesn't have the group itself
-                # so we need to manually fix that
-                groups = (
-                    meta[meta.group.notnull()]
-                    .set_index("bodyId")["group"]
-                    .astype(int)
-                    .astype(str)
-                    .to_dict()
-                )
-                # For each {bodyID: group} also add {group: group}
-                groups.update({int(v): v for v in groups.values()})
-
-                # Add a prefix to the groups
-                groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
-
-                miss = meta.type.isnull()
-                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
-            if col == "instance":
-                # Instance is a bit of a mixed bag: we can get things like
-                # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
-                # which we will ignore for now
-
-                # First get {ID}_L types
-                num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
-                num_inst.columns = ["instance"]
-                num_inst["bodyId"] = meta.bodyId.values
-                num_inst = num_inst[num_inst.instance.notnull()]
-                num_inst = num_inst.set_index("bodyId").instance.to_dict()
-                num_inst.update({v: v for v in num_inst.values()})
-
-                miss = meta.type.isnull()
-                meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
-
-            meta["type"] = meta.type.fillna(meta[col])
+        _backfill_types(meta, backfill_types)
 
     # Drop untyped
     meta = meta[meta.type.notnull()]
@@ -453,6 +438,92 @@ def _get_mcns_types(
         ]
     print("Done.")
     return meta.set_index("bodyId").type.to_dict()
+
+
+@lru_cache
+def _get_manc_types(
+    add_side=False,
+    backfill_types=False,
+    source="clio",
+):
+    """Fetch maleVNC types from clio/neuPrint.
+
+    Parameters
+    ----------
+    add_side :      bool
+                    If True, will add soma side to the type.
+    backfill_types : list, optional
+                    List of columns to backfill types from.
+    source :        "clio" | "neuprint"
+                    Source of the annotations.
+
+    """
+    assert source in (
+        "clio",
+        "neuprint",
+    ), f'`source` must be clio or neuprint, got "{source}"'
+    print(f"Caching male VNC `type` annotations from {source}... ", end="", flush=True)
+
+    # This function makes sure that columns have the same name regardless of source
+    meta = _get_mcns_meta(source=source)
+
+    if backfill_types:
+        _backfill_types(meta, backfill_types)
+
+    # Drop untyped
+    meta = meta[meta.type.notnull()]
+
+    if add_side:
+        meta["type"] = [
+            f"{t}_{s}" for t, s in zip(meta.type.values, meta.soma_side.values)
+        ]
+    print("Done.")
+    return meta.set_index("bodyId").type.to_dict()
+
+
+def _backfill_types(meta, backfill_types):
+    """Backfill types from other columns."""
+    for col in backfill_types:
+        if col not in meta.columns:
+            continue
+
+        # For "group" and "instance" we need to do a bit of clean-up first
+        if col == "group":
+            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
+            # However, that identity neuron often doesn't have the group itself
+            # so we need to manually fix that
+            groups = (
+                meta[meta.group.notnull()]
+                .set_index("bodyId")["group"]
+                .astype(int)
+                .astype(str)
+                .to_dict()
+            )
+            # For each {bodyID: group} also add {group: group}
+            groups.update({int(v): v for v in groups.values()})
+
+            # Add a prefix to the groups
+            groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
+
+            miss = meta.type.isnull()
+            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(groups)
+        if col == "instance":
+            # Instance is a bit of a mixed bag: we can get things like
+            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
+            # which we will ignore for now
+
+            # First get {ID}_L types
+            num_inst = meta.instance.str.extract("^([0-9]+)_[LRM]$")
+            num_inst.columns = ["instance"]
+            num_inst["bodyId"] = meta.bodyId.values
+            num_inst = num_inst[num_inst.instance.notnull()]
+            num_inst = num_inst.set_index("bodyId").instance.to_dict()
+            num_inst.update({v: v for v in num_inst.values()})
+
+            miss = meta.type.isnull()
+            meta.loc[miss, "type"] = meta.loc[miss, "bodyId"].map(num_inst)
+
+        meta["type"] = meta.type.fillna(meta[col])
 
 
 @lru_cache
@@ -479,11 +550,30 @@ def _get_hb_sides(live=False):
 
 
 @lru_cache
-def _get_mcns_sides(source="clio"):
+def _get_mcns_sides(source="clio", backfill_from_root=True):
     """Fetch male CNS sides."""
     meta = _get_mcns_meta(source=source).rename(
         {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
     )
+
+    if backfill_from_root and 'rootSide' in meta.columns:
+        meta['side'] = meta.side.fillna(meta.rootSide)
+
+    # Drop neurons without a side
+    meta = meta[meta.side.notnull()]
+
+    return meta.set_index("bodyId").side.to_dict()
+
+
+@lru_cache
+def _get_manc_sides(source="clio", backfill_from_root=True):
+    """Fetch male VNC sides."""
+    meta = _get_manc_meta(source=source).rename(
+        {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
+    )
+
+    if backfill_from_root and 'rootSide' in meta.columns:
+        meta['side'] = meta.side.fillna(meta.rootSide)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
