@@ -125,26 +125,22 @@ class MaleCNS(JaneliaDataSet):
                 "`backfill_types` must be a str, a list or tuple or `None`"
             )
         self.backfill_types = backfill_types
-
-        if rois is not None:
-            self.rois = _parse_neuprint_roi(rois, client=self.neuprint_client)
-        else:
-            self.rois = None
-
-        if self.cn_object is not None:
-            if isinstance(self.cn_object, (str, Path)):
-                self.cn_object = Path(self.cn_object).expanduser()
-                if not self.cn_object.is_file():
-                    raise ValueError(f'"{self.cn_object}" is not a valid file')
-                else:
-                    self.cn_object = pd.read_feather(self.cn_object)
-            elif not isinstance(self.cn_object, pd.DataFrame):
-                raise ValueError("`cn_object` must be a path or a DataFrame")
+        self.rois = rois
 
     @property
     def neuprint_client(self):
         """Return neuprint client."""
         return _get_neuprint_mcns_client()
+
+    @property
+    def rois(self):
+        return getattr(self, "_rois", None)
+
+    @rois.setter
+    def rois(self, value):
+        if value is not None:
+            value = _parse_neuprint_roi(value, client=self.neuprint_client)
+        self._rois = value
 
     @classmethod
     def hemisphere(cls, hemisphere, label=None, **kwargs):

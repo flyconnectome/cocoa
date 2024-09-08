@@ -112,16 +112,6 @@ class MaleVNC(JaneliaDataSet):
         else:
             self.rois = None
 
-        if self.cn_object is not None:
-            if isinstance(self.cn_object, (str, Path)):
-                self.cn_object = Path(self.cn_object).expanduser()
-                if not self.cn_object.is_file():
-                    raise ValueError(f'"{self.cn_object}" is not a valid file')
-                else:
-                    self.cn_object = pd.read_feather(self.cn_object)
-            elif not isinstance(self.cn_object, pd.DataFrame):
-                raise ValueError("`cn_object` must be a path or a DataFrame")
-
     @property
     def neuprint_client(self):
         """Return neuprint client."""
