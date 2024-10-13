@@ -265,9 +265,9 @@ class MaleCNS(JaneliaDataSet):
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
         ann = _get_mcns_meta(source=self.meta_source).copy()
 
-        # Drop empty strings (from e.g. `type`` column)
+        # Drop empty strings (from e.g. `type` column)
         for c in ann.columns:
-            ann[c] = ann[c].replace("", np.nan)
+            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
 
         return ann
 
@@ -532,7 +532,7 @@ class MaleCNS(JaneliaDataSet):
                     source=self.meta_source,
                 )
 
-        # Fetch hemibrain vectors
+        # Fetch connectivity vectors
         if self.upstream:
             # print("Fetching upstream connectivity... ", end="", flush=True)
             if isinstance(self.cn_object, pd.DataFrame):
