@@ -47,6 +47,14 @@ MCNS_BAD_TYPES = (
     "Y",
     "TuBu",
 )
+
+FLYWIRE_BAD_TYPES = (
+    "mAL",
+    "mAL1,mAL2A,mAL2B,mAL3A,mAL3B,mAL4,mAL5A,mAL5B,mAL6",
+    "",
+    " "
+)
+
 FLYWIRE_LIVE_COLUMNS = [
     "flow",
     "root_id",
@@ -341,7 +349,7 @@ def _get_clio_client(dataset):
 
 
 @lru_cache
-def _get_fw_types(mat, add_side=False, live=False):
+def _get_fw_types(mat, add_side=False, live=False, exclude_bad_types=True):
     """Fetch types from `info`.
 
     - cached
@@ -362,6 +370,10 @@ def _get_fw_types(mat, add_side=False, live=False):
         if col in table.columns:
             table["type"] = table["type"].fillna(table[col])
     typed = table[table.type.notnull()]
+
+    # Drop some known bad types
+    if exclude_bad_types:
+        typed = typed[~typed.type.isin(FLYWIRE_BAD_TYPES)]
 
     if add_side:
         typed = typed.copy()  # Avoid SettingWithCopyWarnings
