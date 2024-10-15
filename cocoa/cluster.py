@@ -1004,6 +1004,7 @@ def generate_clustering(
     fw_materialization=783,
     exclude_queries=False,
     mcns_cn_object=None,
+    hemibrain_cn_object=None,
     clear_caches=False,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
@@ -1114,6 +1115,7 @@ def generate_clustering(
                         upstream=upstream,
                         downstream=downstream,
                         exclude_queries=exclude_queries,
+                        cn_object=hemibrain_cn_object,
                         label="HbL",
                     ).add_neurons(np.array(hb.neurons)[is_left])
                 )

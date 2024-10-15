@@ -46,6 +46,11 @@ class Hemibrain(JaneliaDataSet):
                     True, will pull from a table where we stage annotations
                     - this requires special permissions and is for internal use
                     only.
+    cn_object :     str | pd.DataFrame
+                    Either a DataFrame or path to a `.feather` connectivity file which
+                    will be loaded into a DataFrame. The DataFrame is expected to
+                    come from `neuprint.fetch_adjacencies` and include all relevant
+                    IDs.
 
     """
 
@@ -62,6 +67,7 @@ class Hemibrain(JaneliaDataSet):
         use_sides=False,
         exclude_queries=False,
         live_annot=False,
+        cn_object=None,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
@@ -71,6 +77,7 @@ class Hemibrain(JaneliaDataSet):
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
         self.live_annot = live_annot
+        self.cn_object = cn_object
 
     def _add_neurons(self, x, exact=False, sides=("left", "right")):
         """Turn `x` into hemibrain body IDs."""
@@ -165,6 +172,7 @@ class Hemibrain(JaneliaDataSet):
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
         x.live_annot = self.live_annot
+        x.cn_object = self.cn_object
 
         return x
 

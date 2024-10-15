@@ -407,6 +407,8 @@ class GraphMapper(BaseMapper):
         self.post_process = post_process
         self.strict = strict
         self._synonyms = {}
+        self._graph_processors = []
+        self._bad_labels = []
         super().__init__(*datasets, verbose=verbose)
 
     def add_synonym(self, label, synonym):
@@ -423,6 +425,35 @@ class GraphMapper(BaseMapper):
         self._synonyms[label] = self._synonyms.get(label, set()) | {synonym}
         # Mark as stale
         self._stale = True
+
+        return self
+
+    def add_bad_labels(self, labels):
+        """Add bad label(s) that should be ignored for the mapping."""
+        self._bad_labels.extend(labels)
+        # Mark as stale
+        self._stale = True
+
+        return self
+
+    def add_graph_processor(self, processor):
+        """Add a graph processor to the mapping.
+
+        The processor is run after the graphs from individual datasets have
+        been combined and before the mappings are generated. The processor
+        should accept a graph as input and return a graph.
+
+        This can be useful to e.g. add manual synonyms or to remove known
+        pathological connections.
+
+        IMPORTANT: the in- and output graph will be a directed graphs!
+        E.g. the direction should be "node" -> "label".
+
+        """
+        if not callable(processor):
+            raise ValueError("Processor must be callable.")
+
+        self._graph_processors.append(processor)
 
         return self
 
@@ -484,6 +515,15 @@ class GraphMapper(BaseMapper):
             ds = datasets[0]
             # Generate a graph for the dataset
             G = ds.compile_label_graph(which_neurons="all", strict=self.strict)
+
+            # Drop bad labels from the graph (if not present will be silently ignored)
+            G.remove_nodes_from(self._bad_labels)
+
+            for proc in self._graph_processors:
+                G = proc(G)
+                if not isinstance(G, nx.Graph):
+                    raise ValueError(f"Graph processor must return a graph, got {type(G)}")
+
             mappings = {}
             keep_edges = set()
             for n in ds.get_all_neurons():
@@ -528,7 +568,12 @@ class GraphMapper(BaseMapper):
         # granular labels from other dataset
         graphs = []
         for ds in datasets:
+            # Compile the label graph for this dataset
             G = ds.compile_label_graph(which_neurons="all", strict=self.strict)
+
+            # Drop bad labels from the graph (if not present will be silently ignored)
+            G.remove_nodes_from(self._bad_labels)
+
             # Here we set e.g. "FWR=True" so we can later identify which dataset(s)
             # a node belongs to (can be multiple!)
             nx.set_node_attributes(G, True, ds.label)
@@ -546,6 +591,12 @@ class GraphMapper(BaseMapper):
 
         # Combine graphs
         G = nx.compose_all(graphs)
+
+        # Run graph processors
+        for proc in self._graph_processors:
+            G = proc(G)
+            if not isinstance(G, nx.Graph):
+                raise ValueError(f"Graph processor must return a graph, got {type(G)}")
 
         # Add manual synonyms
         for label, synonyms in self._synonyms.items():

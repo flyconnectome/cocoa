@@ -2,6 +2,8 @@ import neuprint as neu
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
+
 from .core import DataSet
 from .ds_utils import _add_types, _is_int
 
@@ -19,6 +21,26 @@ class JaneliaDataSet(DataSet, ABC):
     @abstractproperty
     def neuprint_client(self):
         pass
+
+    @property
+    def cn_object(self):
+        return getattr(self, "_cn_object", None)
+
+    @cn_object.setter
+    def cn_object(self, value):
+        if value is not None:
+            if isinstance(value, (str, Path)):
+                value = Path(value).expanduser()
+                if not value.is_file():
+                    raise ValueError(f'"{self.cn_object}" is not a valid file')
+                self.cn_object = pd.read_feather(value)
+            elif isinstance(value, pd.DataFrame):
+                self._cn_object = value
+            else:
+                raise ValueError("`cn_object` must be a path, a DataFrame or `None`")
+        else:
+            self._cn_object = None
+
 
     def _add_neurons(self, x, exact=True, sides=None):
         """Turn `x` into body IDs."""
