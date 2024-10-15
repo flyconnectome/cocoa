@@ -1,10 +1,11 @@
+import fastcluster
+
 import networkx as nx
 import tanglegram as tg
 import numpy as np
 
 from functools import partial
 from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage
 
 
 __all__ = ["extract_homogeneous_clusters"]
@@ -34,6 +35,7 @@ def extract_homogeneous_clusters(
     min_dist=None,
     min_dist_diff=None,
     link_method="ward",
+    linkage=None,
     verbose=False,
 ):
     """Make clusters that contains representatives of each unique label.
@@ -67,6 +69,8 @@ def extract_homogeneous_clusters(
                     are closer together than `min_dist_diff`.
     link_method :   str
                     Method to use for generating the linkage.
+    linkage :       np.ndarray
+                    Precomputed linkage. If this is given `link_method` is ignored.
 
     Returns
     -------
@@ -77,7 +81,10 @@ def extract_homogeneous_clusters(
         dists = 1 - dists
 
     # Make linkage
-    Z = linkage(squareform(dists, checks=False), method=link_method)
+    if linkage is None:
+        Z = fastcluster.linkage(squareform(dists, checks=False), method=link_method)
+    else:
+        Z = linkage
 
     # Turn linkage into graph
     G = tg.utils.linkage_to_graph(Z, labels=labels)
@@ -135,7 +142,7 @@ def _find_clusters_rec(
         # If this is a leaf-node it won't have a "distance" property
         dist = 0
 
-    # Remove the root in this graph
+    # Remove the root in this (sub)graph
     G2 = G.copy()
     G2.remove_node(root)
 

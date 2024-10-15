@@ -1,5 +1,8 @@
+# TODOs:
+# - add parameter to use the "untyped" fraction in the clustering?
+
 import re
-import time
+import functools
 
 import pandas as pd
 import numpy as np
@@ -10,6 +13,7 @@ import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
+# but more importantly it is much more memory efficient
 from fastcluster import linkage
 from scipy.cluster.hierarchy import cut_tree, leaves_list, dendrogram
 from scipy.spatial.distance import squareform
@@ -18,60 +22,12 @@ from matplotlib.collections import PatchCollection
 
 from .datasets import FlyWire, Hemibrain, MaleCNS
 from .datasets.core import DataSet
+from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
-from .utils import make_iterable, req_compile, printv
+from .utils import make_iterable, printv
 from .distance import calculate_distance
+from .mappers import GraphMapper, BaseMapper
 
-"""
-Code Example:
-
-# Step 1: Define datasets
->>> import cocoa as co
->>> ds1 = co.datasets.FlyWireRHS(ids=[1213, 12321])
->>> ds2 = co.datasets.FlyWireLHS(ids=[1213, 12321])
-
-# Step 2: Plot
->>> co.cosine_plot(ds1, ds2, ...)
-
-# Alternatively if there is a preset
->>> co.cosine_plot({'FAFB_RHS': [1213, 12321],
-...                 'FAFB_LHS': [1211, 22321],
-...                 'hemibrain_RHS': [3212, 32313]})
-
->>> # `edges_...` is a dataframe from some other source
->>> ds1, ds2 = co.DataSet('RHS'), co.DataSet('LHS')
->>> ds1.add_edges(edges_left)
->>> ds2.add_edges(edges_right)
->>> # Add (optional) common labels
->>> ds1.add_labels(labels_dict1)
->>> ds2.add_labels(labels_dict2)
->>> # Combine
->>> cb = co.Clustering(ds1, ds2)
->>> # Alternatively: cb = ds1 + ds2
->>> # Get some stats
->>> cb.report()
-Clustering containing 2 datasets: "RHS", "LHS"
-
-"RHS" contains 4231 edges for 142 neurons.
-"LHS" contains 4532 edges for 140 neurons.
-
-"RHS" and "LHS" have 50 shared labels.
-
-Other methods:
-
-Clustering.label_summary()  # for each shared label get a summary
-Clustering.coverage()  # report a coverage for each neuron
-Clustering.coverage_plot()
-Clustering.connectivity_vector(use_labels=True)
-Clustering.connectivity_distance()
-Clustering.clustermap(interactive=True)
-Clustering.dendrogram()
-
-For precomputed co-clustering (e.g. from NBLAST scores) use `co.Cluster`
-
-For graph matching use `co.GraphMatcher([])`
-
-"""
 
 __all__ = ["Clustering", "generate_clustering"]
 
@@ -81,15 +37,36 @@ DISTS_DTYPE = np.float32
 VECT_DTYPE = np.uint16
 
 
-class Clustering:
-    """Normalizes, combines and co-clusters datasets."""
 
+def req_compile(func):
+    """Check if we need to compile connectivity."""
+
+    @functools.wraps(func)
+    def inner(*args, **kwargs):
+        if not hasattr(args[0], "dists_"):
+            args[0].compile()
+        return func(*args, **kwargs)
+
+    return inner
+
+
+class Clustering:
+    """Normalizes, combines and co-clusters datasets.
+
+    Parameters
+    ----------
+    datasets :  DataSet | list of DataSet, optional
+                One or more datasets to include in the clustering.
+                Alternatively, datasets can be added using the `add_dataset`.
+
+    """
     def __init__(self, *datasets):
         self._datasets = []
         self.add_dataset(datasets)
 
     def __repr__(self):
-        return f"Clustering <datasets={len(self.datasets)}>"
+        n_neurons = sum(len(ds.neurons) for ds in self.datasets)
+        return f"Clustering <datasets={len(self.datasets)};neurons={n_neurons}>"
 
     def __len__(self):
         """The number of datasets in the Clustering."""
@@ -185,15 +162,27 @@ class Clustering:
         results["n_syn"] = results.label.map(n_syn)
         return results
 
+    def get_linkage(self, method="ward", preserve_input=True):
+        """Calculate and cache linkage matrix for the clustering."""
+        # Check if we can re-use a condensed vector-form distance matrix
+        s = getattr(self, "dists_vect_", squareform(self.dists_.values, checks=False))
+
+        return linkage(
+            s,
+            method=method,
+            preserve_input=preserve_input,  # note: this doesn't do anything if our distances are float32
+        )
     def compile(
         self,
         join="existing",
         metric="cosine",
+        mapper=GraphMapper,
         force_recompile=False,
         exclude_labels=None,
         include_labels=None,
         cn_frac_threshold=None,
         augment=None,
+        n_batches="auto",
         verbose=True,
     ):
         """Compile combined connectivity vector and calculate distance matrix.
@@ -210,6 +199,10 @@ class Clustering:
                       - "outer" will use all available labels
         metric :    "cosine" | "Euclidean"
                     Metric to use for distance calculations.
+        mapper :    cocoa.Mapper
+                    The mapper used to match neuron labels across datasets.
+                    Examples are `cocoa.GraphMapper` and `cocoa.SimpleMapper`.
+                    See the mapper's documentation for more information.
         exclude_labels : str | list of str, optional
                     If provided will exclude given labels from the observation
                     vector. This uses regex!
@@ -223,6 +216,9 @@ class Clustering:
                     An second distance matrix (e.g. from NBLAST) that will be
                     used to augment the connectivity-based scores. Index and
                     columns must contain all the IDs in this clustering.
+        n_batches : int | "auto"
+                    Number of batches to use for distance calculation. If "auto"
+                    will use 1 batch per 100k neurons.
 
         Returns
         -------
@@ -241,70 +237,91 @@ class Clustering:
         if not isinstance(augment, (pd.DataFrame, type(None))):
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
+        mapper_type = type(mapper) if not isinstance(mapper, type) else mapper
+        if not issubclass(mapper_type, BaseMapper):
+            raise TypeError(f'`mapper` must be a Mapper, got "{mapper_type}"')
+
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
             print("Warning: Looks the clustering contains non-unique IDs!")
 
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
-            if not hasattr(ds, "edges_") or force_recompile:
+            # Recompile if (a) not yet compiled, (b) forced or (c) the current edge list contains types
+            if (
+                not hasattr(ds, "edges_")
+                or force_recompile
+                or getattr(ds, "edges_types_used_", False)
+            ):
                 printv(
                     f'Compiling connectivity vector for "{ds.label}" '
                     f"({ds.type}) [{i+1}/{len(self.datasets)}]",
                     verbose=verbose,
                 )
+                _ot = ds.use_types
+                ds.use_types = False
                 ds.compile()
+                ds.use_types = _ot
 
-        # Extract labels
-        all_labels = set()
+        # Generate the mappings
+        if isinstance(mapper, type):
+            mapper = mapper(verbose=verbose)
+        self.mapper_ = mapper.add_dataset(*self.datasets)
+        self.mappings_ = self.mapper_.get_mappings()
+
+        printv("Combining connectivity vectors... ", verbose=verbose, end="")
+
+        # Apply the mappings to the individual datasets
         for ds in self.datasets:
-            up = ds.edges_.loc[ds.edges_.post.isin(ds.neurons)]
-            down = ds.edges_.loc[ds.edges_.pre.isin(ds.neurons)]
-            all_labels |= set(up.pre.values.astype(str))
-            all_labels |= set(down.post.values.astype(str))
+            up = ds.edges_.loc[ds.edges_.post.isin(ds.neurons)].copy()
+            down = ds.edges_.loc[ds.edges_.pre.isin(ds.neurons)].copy()
 
-        # Find any cell types we need to collapse
-        collapse_types = {
-            c: cc for cc in list(all_labels) for c in cc.split(",") if ("," in cc)
-        }
-        for ds in self.datasets:
-            edges = ds.edges_.copy()
-            if len(collapse_types):
-                is_up = edges.post.isin(ds.neurons)
-                is_down = edges.pre.isin(ds.neurons)
-                edges.loc[is_up, "pre"] = edges.loc[is_up, "pre"].map(
-                    lambda x: collapse_types.get(x, x)
-                )
-                edges.loc[is_down, "post"] = edges.loc[is_down, "post"].map(
-                    lambda x: collapse_types.get(x, x)
-                )
+            up = _add_types(
+                up,
+                types=self.mappings_,
+                col="pre",
+                sides=None,
+                sides_rel=False,
+            )
 
-                ds.edges_proc_ = edges.groupby(
-                    ["pre", "post"], as_index=False
-                ).weight.sum()
-            else:
-                ds.edges_proc_ = edges
+            down = _add_types(
+                down,
+                types=self.mappings_,
+                col="post",
+                sides=None,
+                sides_rel=False,
+            )
+
+            ds.edges_proc_ = pd.concat(
+                (
+                    up.groupby(["pre", "post"], as_index=False).weight.sum(),
+                    down.groupby(["pre", "post"], as_index=False).weight.sum(),
+                ),
+                axis=0,
+            ).drop_duplicates()
 
         # Find labels that exist in all datasets
         if join == "inner":
-            to_use = set(self.datasets[0].edges_.pre.unique().tolist()) | set(
-                self.datasets[0].edges_.post.unique().tolist()
+            to_use = set(self.datasets[0].edges_proc_.pre.unique().tolist()) | set(
+                self.datasets[0].edges_proc_.post.unique().tolist()
             )
             for ds in self.datasets[1:]:
                 to_use = to_use & (
-                    set(ds.edges_.pre.unique().tolist())
-                    | set(ds.edges_.post.unique().tolist())
+                    set(ds.edges_proc_.pre.unique().tolist())
+                    | set(ds.edges_proc_.post.unique().tolist())
                 )
             to_use = list(to_use)
         elif join in ("outer", "existing"):
             # Get all labels
-            to_use = set(self.datasets[0].edges_.pre.unique().tolist()) | set(
-                self.datasets[0].edges_.post.unique().tolist()
+            to_use = set(self.datasets[0].edges_proc_.pre.unique().tolist()) | set(
+                self.datasets[0].edges_proc_.post.unique().tolist()
             )
             for ds in self.datasets[1:]:
-                to_use = to_use | set(ds.edges_.pre.unique().tolist())
-                to_use = to_use | set(ds.edges_.post.unique().tolist())
+                to_use = to_use | set(ds.edges_proc_.pre.unique().tolist())
+                to_use = to_use | set(ds.edges_proc_.post.unique().tolist())
             to_use = list(to_use)
+            # For each label check if it exists "in theory" in all datasets
+            # even if it's not present in the connectivity vectors
             if join == "existing":
                 exists = np.ones(len(to_use), dtype=bool)
                 for ds in self.datasets:
@@ -331,7 +348,7 @@ class Clustering:
                 to_include |= {t for t in to_use if re.match(la, t)}
             if to_include:
                 printv(
-                    f"Including {len(to_include)} of {len(to_use)} labels: "
+                    f"\nIncluding {len(to_include)} of {len(to_use)} labels: "
                     f"{to_include}",
                     verbose=verbose,
                 )
@@ -359,15 +376,18 @@ class Clustering:
             adj = ds.edges_proc_.groupby(["pre", "post"]).weight.sum().unstack()
             # Get downstream adjacency (rows = queries, columns = shared targets)
             down = adj.reindex(index=ds.neurons, columns=to_use)
+            down.columns = pd.MultiIndex.from_tuples([('downstream', c) for c in down.columns])
             # Get upstream adjacency (rows = shared inputs, columns = queries)
-            up = adj.reindex(columns=ds.neurons, index=to_use)
-            adjacencies.append(pd.concat((down, up.T), axis=1).fillna(0))
+            up = adj.reindex(columns=ds.neurons, index=to_use).T
+            up.columns = pd.MultiIndex.from_tuples([('upstream', c) for c in up.columns])
+            adjacencies.append(pd.concat((down, up), axis=1).fillna(0))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
         self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
         self.vect_sources_ = np.array(sources)
         self.vect_labels_ = np.array(labels)
 
+        printv("Done.", verbose=verbose)
         printv(
             f"Generated a {self.vect_.shape[0]:,} by {self.vect_.shape[1]:,} observation vector.",
             verbose=verbose,
@@ -403,7 +423,13 @@ class Clustering:
 
         # Calculate distances
         self.dists_ = calculate_distance(
-            self.vect_, augment=augment, metric=metric, verbose=verbose
+            self.vect_,
+            augment=augment,
+            metric=metric,
+            verbose=verbose,
+            n_batches=(self.vect_.shape[0] // 100000 + 1)
+            if n_batches == "auto"  # Start batching after 100k neurons
+            else n_batches,
         )
         self.dists_.columns = [
             f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
@@ -413,7 +439,7 @@ class Clustering:
         return self
 
     @req_compile
-    def to_table(self, clusters=None, link_method="ward", orient="neurons"):
+    def to_table(self, clusters=None, link_method="ward", orient="neurons", linkage=None):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
@@ -427,6 +453,9 @@ class Clustering:
                       Determines output:
                         - for "neurons" each row will be a neuron
                         - for "clusters" each row will be a ``cluster``
+        linkage :     np.ndarray, optional
+                      A precomputed linkage matrix. If provided, will use this
+                      instead of calculating a new one.
 
         Returns
         -------
@@ -447,11 +476,10 @@ class Clustering:
             x = 1 - x
 
         # Generate linkage and extract order
-        Z = linkage(
-            squareform(self.dists_.values, checks=False),
-            method=link_method,
-            preserve_input=False,
-        )
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(method=link_method)
+        else:
+            Z = linkage
         leafs = leaves_list(Z)
 
         # Generate table
@@ -495,7 +523,7 @@ class Clustering:
         return table
 
     @req_compile
-    def extract_clusters(self, N, out="membership", **kwargs):
+    def extract_clusters(self, N, out="membership", linkage=None, **kwargs):
         """Extract clusters.
 
         Parameters
@@ -507,6 +535,9 @@ class Clustering:
                     - `ids` returns lists of neuron IDs
                     - `membership` returns a cluster ID for each neuron
                     - `labels` returns lists of neuron labels
+        linkage : np.ndarray, optional
+                Precomputed linkage matrix. If provided, will use this instead
+                of calculating a new one.
         **kwargs
                 Keyword arguments passed to `linkage()`.
 
@@ -521,9 +552,12 @@ class Clustering:
             x = 1 - x
         defaults = CLUSTER_DEFAULTS.copy()
         defaults.update(kwargs)
-        Z = linkage(
-            squareform(x.values, checks=False), preserve_input=False, **defaults
-        )
+
+        # Generate linkage if necessary
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(**defaults)
+        else:
+            Z = linkage
 
         cl = cut_tree(Z, n_clusters=N).flatten()
         if out == "membership":
@@ -544,6 +578,7 @@ class Clustering:
         min_dist=None,
         min_dist_diff=None,
         link_method="ward",
+        linkage=None,
         verbose=False,
     ):
         """Extract homogenous clusters from clustermap or distance matrix.
@@ -566,6 +601,9 @@ class Clustering:
                         which we are allowed to make clusters.
         link_method :   str
                         Method to use for generating the linkage.
+        linkage :       np.ndarray, optional
+                        Precomputed linkage matrix. If provided, will use this
+                        instead of calculating a new one.
 
         Returns
         -------
@@ -584,6 +622,7 @@ class Clustering:
             max_dist=max_dist,
             min_dist=min_dist,
             min_dist_diff=min_dist_diff,
+            linkage=linkage,
             verbose=verbose,
         )
         if out == "membership":
@@ -596,41 +635,39 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def plot_dendrogram(
-        self,
-        color_by="dataset",
-        cmap="tab10",
-        ax=None,
-        **kwargs
-    ):
+    def plot_dendrogram(self, color_by="dataset", cmap="tab10", ax=None, linkage=None, **kwargs):
         """Plot dendrogram.
-        
+
         Parameters
         ----------
         color_by :      "dataset" | "label" | np.ndarray, optional
                         How to color the neurons (i.e. leafs in the dendrogram).
-                        If a numpy array must be a list of labels, one for each 
+                        If a numpy array must be a list of labels, one for each
                         neuron in the same order as in `Clustering.dists_`.
-        cmap :          str | dict 
+        cmap :          str | dict
                         Colormap to use for coloring neurons. If a dict, must
                         map `color_by` labels to colors.
         ax :            matplotlib Ax, optional
                         If provided, will plot on this axis.
+        linkage :       np.ndarray, optional
+                        Precomputed linkage matrix. If provided, will use this
+                        instead of calculating a new one.
         **kwargs
                         Keyword arguments are passed to scipy.dendrogram.
 
-        Returns 
+        Returns
         -------
-        dn :            dict 
+        dn :            dict
                         The scipy dendrogram object.
 
         """
         dists = self.dists_
-        Z = linkage(
-            squareform(dists.values, checks=False),
-            preserve_input=False,
-            **CLUSTER_DEFAULTS,
-        )
+
+        # Generate linkage if necessary
+        if not isinstance(linkage, np.ndarray):
+            Z = self.get_linkage(**CLUSTER_DEFAULTS)
+        else:
+            Z = linkage
 
         if ax is None:
             fig, ax = plt.subplots()
@@ -650,12 +687,12 @@ class Clustering:
             elif color_by == "label":
                 labels = self.vect_labels_
             elif isinstance(color_by, (np.ndarray, list)):
-                labels = np.asarray(color_by) 
+                labels = np.asarray(color_by)
             else:
                 raise TypeError(
                     'Unknown type for `color_by`, must be "dataset", "label" or a list/array of labels'
                 )
-            
+
             if len(labels) != len(dists):
                 raise ValueError(
                     "Length of `color_by` must match the number of neurons."
@@ -672,19 +709,21 @@ class Clustering:
             else:
                 raise TypeError(f'Unknown type for `cmap`, got "{type(cmap)}"')
 
-            # Get the leaves list 
+            # Get the leaves list
             ll = leaves_list(Z)
             rectangles = []
 
             # Collect rectangles
             for i, ix in enumerate(ll):
                 rectangles.append(
-                    Rectangle(xy=(i * 10 + 1, -0.7), width=8, height=0.7, fc=cmap[labels[ix]])
+                    Rectangle(
+                        xy=(i * 10 + 1, -0.7), width=8, height=0.7, fc=cmap[labels[ix]]
+                    )
                 )
             ax.add_collection(PatchCollection(rectangles, match_original=True))
 
             # Add small padding so we don't cut off the rectangles
-            ax.set_ylim(bottom=-.1)  
+            ax.set_ylim(bottom=-0.1)
 
         return dn
 
@@ -701,9 +740,9 @@ class Clustering:
                         Possible values are "id", "label" and "dataset".
         fontsize :      int | float | None
                         Fontsize for tick labels. If `None`, will remove labels.
-        **kwargs 
+        **kwargs
                         Keyword arguments are passed to seaborn.clustermap
-                        
+
         Returns
         -------
         cm :            sns.clustermap
@@ -711,11 +750,7 @@ class Clustering:
 
         """
         dists = self.dists_
-        Z = linkage(
-            squareform(dists.values, checks=False),
-            preserve_input=False,
-            **CLUSTER_DEFAULTS,
-        )
+        Z = self.get_linkage(**CLUSTER_DEFAULTS)
 
         # We seem to sometimes get negative cluster distances which dendrogram()
         # does not like - perhaps something to do with neurons not having any
@@ -745,7 +780,7 @@ class Clustering:
             col_colors=col_colors,
             row_linkage=Z,
             col_linkage=Z,
-            **kwargs
+            **kwargs,
         )
         ax = cm.ax_heatmap
         ix = cm.dendrogram_row.reordered_ind
@@ -961,11 +996,16 @@ def generate_clustering(
     hb=None,
     mcns=None,
     split_lr=True,
+    ignore_hb_l=True,
     live_annot=False,
     upstream=True,
     downstream=True,
     fw_cn_file=None,
     fw_materialization=783,
+    exclude_queries=False,
+    mcns_cn_object=None,
+    hemibrain_cn_object=None,
+    clear_caches=False,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
 
@@ -982,6 +1022,8 @@ def generate_clustering(
                 into left and right. See also `split_lr` parameter.
     split_lr :  bool
                 If True, will split IDs into left and right automatically.
+    ignore_hb_l : bool
+                If True, will ignore left hemisphere Hemibrain neurons.
     live_annot : bool
                 Whether to use live annotations. This requires access to SeatTable.
     upstream :  bool
@@ -993,11 +1035,19 @@ def generate_clustering(
     fw_materialization : int
                 Materialization to use for FlyWire. Must match `fw_cn_file` if
                 that is provided.
+    mcns_cn_object : str | pd.DataFrame
+                Either a DataFrame or path to a `.feather` connectivity file which
+                will be loaded into a DataFrame. The DataFrame is expected to
+                come from `neuprint.fetch_adjacencies` and include all relevant
+                IDs.
 
     """
     datasets = []
 
     if fw is not None:
+        if clear_caches:
+            FlyWire().clear_cache()
+
         # Use the dataset to parse `fw` into root IDs
         fw = FlyWire(
             live_annot=live_annot,
@@ -1019,6 +1069,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="FwL",
                 cn_file=fw_cn_file,
+                exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[is_left])
             fw_right = FlyWire(
@@ -1027,6 +1078,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="FwR",
                 cn_file=fw_cn_file,
+                exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[~is_left])
 
@@ -1038,6 +1090,9 @@ def generate_clustering(
             datasets.append(fw)
 
     if hb is not None:
+        if clear_caches:
+            Hemibrain().clear_cache()
+
         # Use the dataset to parse `hb` into body IDs
         hb = Hemibrain(
             live_annot=live_annot,
@@ -1053,12 +1108,14 @@ def generate_clustering(
                 hb.neurons, hb_ann[hb_ann.side == "left"].bodyId.astype(int)
             )
 
-            if any(is_left):
+            if any(is_left) and not ignore_hb_l:
                 datasets.append(
                     Hemibrain(
                         live_annot=live_annot,
                         upstream=upstream,
                         downstream=downstream,
+                        exclude_queries=exclude_queries,
+                        cn_object=hemibrain_cn_object,
                         label="HbL",
                     ).add_neurons(np.array(hb.neurons)[is_left])
                 )
@@ -1069,6 +1126,7 @@ def generate_clustering(
                         live_annot=live_annot,
                         upstream=upstream,
                         downstream=downstream,
+                        exclude_queries=exclude_queries,
                         label="HbR",
                     ).add_neurons(np.array(hb.neurons)[~is_left])
                 )
@@ -1076,22 +1134,38 @@ def generate_clustering(
             datasets.append(hb)
 
     if mcns is not None:
+        if clear_caches:
+            MaleCNS().clear_cache()
+
         # Use the dataset to parse `mcns` into body IDs
         mcns = MaleCNS(
-            upstream=upstream, downstream=downstream, label="McnsL"
+            upstream=upstream, downstream=downstream, label="Mcns"
         ).add_neurons(mcns)
 
         # Now split into left/right
         if split_lr:
             mcns_ann = mcns.get_annotations()
+
+            if "rootSide" in mcns_ann.columns:
+                mcns_ann['somaSide'] = mcns_ann.somaSide.fillna(mcns_ann.rootSide)
+
             is_left = np.isin(
-                mcns.neurons, mcns_ann[mcns_ann.soma_side.isin(["left", "L"])].bodyid.astype(int)
+                mcns.neurons,
+                mcns_ann[mcns_ann.somaSide.isin(["left", "L"])].bodyId.astype(int),
             )
             mcns_left = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsL"
+                upstream=upstream,
+                downstream=downstream,
+                label="McnsL",
+                cn_object=mcns_cn_object,
+                exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[is_left])
             mcns_right = MaleCNS(
-                upstream=upstream, downstream=downstream, label="McnsR"
+                upstream=upstream,
+                downstream=downstream,
+                label="McnsR",
+                cn_object=mcns_cn_object,
+                exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[~is_left])
 
             if len(mcns_left.neurons):

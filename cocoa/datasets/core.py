@@ -12,6 +12,9 @@ class DataSet(ABC):
         self.label = label
         self.neurons = np.zeros((0,), dtype=np.int64)
 
+    def __len__(self):
+        return len(self.neurons)
+
     def __repr__(self):
         return f"class {self.type} <label={self.label};neurons={len(self.neurons)}>"
 
@@ -57,6 +60,22 @@ class DataSet(ABC):
         )
         return self
 
+    def drop_neurons(self, x, **kwargs):
+        """Drop neurons from dataset.
+
+        Parameters
+        ----------
+        x :     str | int | list thereof
+                Something that can be parsed into IDs. Details depend on the
+                dataset.
+
+        """
+        if not len(self.neurons):
+            return self
+
+        to_drop = self._add_neurons(x, **kwargs)
+        self.neurons = np.setdiff1d(self.neurons, to_drop)
+        return self
     def get_ngl_scene(self):
         return NotImplementedError
 
@@ -68,6 +87,16 @@ class DataSet(ABC):
     @abstractmethod
     def get_labels(self, x, **kwargs):
         """Get label for ID `x`."""
+        pass
+
+    @abstractmethod
+    def get_annotations(self, **kwargs):
+        """Get annotations for neurons."""
+        pass
+
+    @abstractmethod
+    def get_all_neurons(self):
+        """Get all neurons in dataset."""
         pass
 
     @abstractmethod

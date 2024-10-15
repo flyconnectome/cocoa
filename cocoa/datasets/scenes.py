@@ -1,4 +1,4 @@
-from .utils import _get_clio_client
+from .ds_utils import _get_clio_client
 
 
 FLYWIRE_MINIMAL_SCENE = {

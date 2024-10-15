@@ -8,44 +8,29 @@ import networkx as nx
 from pathlib import Path
 
 from .janelia import JaneliaDataSet
-from .scenes import _get_mcns_scene
 from .ds_utils import (
-    _get_mcns_meta,
-    _get_neuprint_mcns_client,
-    _get_mcns_types,
-    _get_mcns_sides,
+    _get_manc_meta,
+    _get_neuprint_manc_client,
+    _get_manc_types,
+    _get_manc_sides,
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
-    MCNS_BAD_TYPES,
 )
 from ..utils import collapse_neuron_nodes
 
-__all__ = ["MaleCNS"]
-
-
-# Neurons with cell bodies in the central brain
-CENTRAL_BRAIN_CLASSES = (
-    "central",
-    "central_tbc",
-    "endocrine",
-    "visual_projection",
-    "visual_projection_tbc",
-    "visual_centrifugal",
-    "visual_centrifugal_tbc",
-    "descending",
-)
+__all__ = ["MaleVNC"]
 
 VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
 
 
-class MaleCNS(JaneliaDataSet):
-    """Male CNS dataset.
+class MaleVNC(JaneliaDataSet):
+    """Male Adult Nerve Cord (MANC) dataset.
 
     Parameters
     ----------
     label :             str
-                        A label used for reporting, plotting, etc.
+                        An identified used for reporting, plotting, etc.
     up/downstream :     bool
                         Whether to use up- and/or downstream connectivity.
     use_types :         bool
@@ -55,8 +40,6 @@ class MaleCNS(JaneliaDataSet):
                         A list of columns to use (in order) to backfill the `type`
                         column. Ignored if ``use_types=False``. If `True`, will use
                         all available columns.
-    exclude_bad_types : bool
-                        Whether to exclude known bad types such as "KC" or "FB".
     exclude_autapses :  bool
                         Whether to exclude autapses from the connectivity vectors.
     use_side :          bool | 'relative'
@@ -82,16 +65,15 @@ class MaleCNS(JaneliaDataSet):
     """
 
     _flybrains_space = "JRCFIB2022Mraw"
-    _type_columns = ("type", "flywire_type", "manc_type")
+    _type_columns = ("type",)
 
     def __init__(
         self,
-        label="maleCNS",
+        label="MANC",
         upstream=True,
         downstream=True,
         use_types=False,
-        backfill_types=("flywire_type", "hemibrain_type", "manc_type"),
-        exclude_bad_types=True,
+        backfill_types=False,
         exclude_autapses=True,
         use_sides=False,
         rois=None,
@@ -108,7 +90,6 @@ class MaleCNS(JaneliaDataSet):
         self.exclude_queries = exclude_queries
         self.meta_source = meta_source
         self.cn_object = cn_object
-        self.exclude_bad_types = exclude_bad_types
         self.exclude_autapses = exclude_autapses
 
         if isinstance(backfill_types, str):
@@ -119,77 +100,26 @@ class MaleCNS(JaneliaDataSet):
             if not backfill_types:
                 backfill_types = None
             else:
-                backfill_types = ("flywire_type", "hemibrain_type", "manc_type", "group", "instance")
+                backfill_types = ("group", "instance")
         elif not isinstance(backfill_types, (list, tuple)):
             raise ValueError(
                 "`backfill_types` must be a str, a list or tuple or `None`"
             )
         self.backfill_types = backfill_types
-        self.rois = rois
+
+        if rois is not None:
+            self.rois = _parse_neuprint_roi(rois, client=self.neuprint_client)
+        else:
+            self.rois = None
 
     @property
     def neuprint_client(self):
         """Return neuprint client."""
-        return _get_neuprint_mcns_client()
-
-    @property
-    def rois(self):
-        return getattr(self, "_rois", None)
-
-    @rois.setter
-    def rois(self, value):
-        if value is not None:
-            value = _parse_neuprint_roi(value, client=self.neuprint_client)
-        self._rois = value
-
-    @classmethod
-    def hemisphere(cls, hemisphere, label=None, **kwargs):
-        """Generate a dataset for given MCNS (central brain) hemisphere.
-
-        We will include neurons with cell bodies in the central brain.
-        Connectivity will be restricted to the "Brain" ROI.
-
-        Parameters
-        ----------
-        hemisphere :    str
-                        "left" or "right"
-        label :         str, optional
-                        Label for the dataset. If not provided will generate
-                        one based on the hemisphere.
-        **kwargs
-            Additional keyword arguments for the dataset.
-
-        Returns
-        -------
-        ds :            MaleCNS
-                        A dataset for the specified hemisphere.
-
-        See Also
-        --------
-        MaleCNS.hemisegments()
-                        Class method to generate a dataset for VNC hemisegments.
-
-        """
-        assert hemisphere in ("left", "right"), f"Invalid hemisphere '{hemisphere}'"
-
-        hemisphere = {"left": "L", "right": "R"}[hemisphere]
-
-        if label is None:
-            label = f"MaleCNS({hemisphere[0]})"
-        ds = cls(label=label, rois="Brain", **kwargs)
-
-        ann = ds.get_annotations()
-        to_add = ann[
-            ((ann.somaSide == hemisphere) | (ann.rootSide == hemisphere))
-            & ann["class"].isin(CENTRAL_BRAIN_CLASSES)
-        ].bodyId.values
-        ds.add_neurons(to_add)
-
-        return ds
+        return _get_neuprint_manc_client()
 
     @classmethod
     def hemisegments(cls, hemisegments, label=None, **kwargs):
-        """Generate a dataset for left or right VNC hemisegments.
+        """Generate a dataset for left or right male VNC hemisegments.
 
         Parameters
         ----------
@@ -203,13 +133,8 @@ class MaleCNS(JaneliaDataSet):
 
         Returns
         -------
-        ds :            MaleCNS
+        ds :            MaleVNC
                         A dataset for the specified hemisegments.
-
-        See Also
-        --------
-        MaleCNS.hemisphere()
-                        Class method to generate a dataset for brain hemispheres.
 
         """
         assert hemisegments in (
@@ -217,16 +142,16 @@ class MaleCNS(JaneliaDataSet):
             "right",
         ), f"Invalid hemisegments '{hemisegments}'"
 
-        hemisegments = {"left": "L", "right": "R"}[hemisegments]
+        hemisegments = {"left": "LHS", "right": "RHS"}[hemisegments]
 
         if label is None:
-            label = f"MaleCNS({hemisegments[0]} VNC)"
-        ds = cls(label=label, rois="VNC", **kwargs)
+            label = f"MaleVNC({hemisegments[0]})"
+        ds = cls(label=label, **kwargs)
 
         ann = ds.get_annotations()
         to_add = ann[
-            ((ann.somaSide == hemisegments) | (ann.rootSide == hemisegments))
-            & ann["class"].isin(VNC_INTRINSIC_CLASSES)
+            (ann.somaSide == hemisegments)
+            | (ann.rootSide == hemisegments) & ann["class"].isin(VNC_INTRINSIC_CLASSES)
         ].bodyId.values
 
         ds.add_neurons(to_add)
@@ -243,7 +168,6 @@ class MaleCNS(JaneliaDataSet):
         x.backfill_types = self.backfill_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
-        x.exclude_bad_types = self.exclude_bad_types
         x.exclude_autapses = self.exclude_autapses
         x.meta_source = self.meta_source
         x.cn_object = self.cn_object
@@ -253,21 +177,24 @@ class MaleCNS(JaneliaDataSet):
 
     def clear_cache(self):
         """Clear cached data (e.g. annotations)."""
-        _get_mcns_meta.cache_clear()
-        _get_mcns_types.cache_clear()
-        _get_mcns_meta.cache_clear()
-        print("Cleared cached male CNS data.")
+        _get_manc_meta.cache_clear()
+        _get_manc_types.cache_clear()
+        _get_manc_meta.cache_clear()
+        print("Cleared cached male VNC data.")
 
         return self
 
     def get_annotations(self):
         """Return annotations."""
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
-        ann = _get_mcns_meta(source=self.meta_source).copy()
+        ann = _get_manc_meta(source=self.meta_source).copy()
 
-        # Drop empty strings (from e.g. `type` column)
+        # Drop empty strings (from e.g. `type`` column)
         for c in ann.columns:
-            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
+            ann[c] = ann[c].replace("", np.nan)
+
+        # Drop "TBD" instances
+        ann.loc[ann.instance == 'TBD', 'instance'] = None
 
         return ann
 
@@ -285,7 +212,7 @@ class MaleCNS(JaneliaDataSet):
 
         """
         # Fetch all types for this version
-        types = _get_mcns_types(
+        types = _get_manc_types(
             add_side=False,
             source=self.meta_source,
             backfill_types=self.backfill_types,
@@ -310,7 +237,7 @@ class MaleCNS(JaneliaDataSet):
 
         """
         # Fetch all sides for this version
-        sides = _get_mcns_sides(source=self.meta_source)
+        sides = _get_manc_sides(source=self.meta_source)
 
         if x is None:
             return sides
@@ -321,24 +248,19 @@ class MaleCNS(JaneliaDataSet):
 
         return np.array([sides.get(i, i) for i in x])
 
-    def get_ngl_scene(self, in_flywire_space=False):
-        client = _get_clio_client("CNS")
+    def get_ngl_scene(self):
+        client = _get_clio_client("MANC")
         seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
-        if not in_flywire_space:
-            scene = copy.deepcopy(client.meta["neuroglancer"])
-            scene.layers.append(
-                {
-                    "source": {
-                        "url": seg_source,
-                        "subsources": {"default": True, "meshes": True},
-                    },
-                    "name": client.meta["tag"],
-                }
-            )
-
-        else:
-            scene = copy.deepcopy(_get_mcns_scene())
-            scene["layers"][0]["source"] = seg_source
+        scene = copy.deepcopy(client.meta["neuroglancer"])
+        scene.layers.append(
+            {
+                "source": {
+                    "url": seg_source,
+                    "subsources": {"default": True, "meshes": True},
+                },
+                "name": client.meta["tag"],
+            }
+        )
         return scene
 
     def label_exists(self, x):
@@ -361,7 +283,7 @@ class MaleCNS(JaneliaDataSet):
     ):
         """Compile label graph.
 
-        For the MaleCNS, this means:
+        For the MaleVNC, this means:
          1. Use the `type` plus columns defined in `backfill_types`
          2. Split compound `types` and `flywire_types` such that e.g. "PS008,PS009"
             produces two edges: (PS008,PS009 -> PS008) and (PS008,PS009 -> PS009)
@@ -370,12 +292,12 @@ class MaleCNS(JaneliaDataSet):
         ----------
         which_neurons : "all" | "self"
                         Whether to use only the neurons in this dataset or all neurons
-                        in the entire MaleCNS dataset (default).
+                        in the entire MaleVNC dataset (default).
         collapse_neurons : bool
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
         strict :        bool
-                        If True, will prefix the labels with the type of the label (e.g. "malecns:PS008").
+                        If True, will prefix the labels with the type of the label (e.g. "malevnc:PS008").
 
         Returns
         -------
@@ -386,8 +308,8 @@ class MaleCNS(JaneliaDataSet):
         --------
         >>> import cocoa as cc
         >>> import networkx as nx
-        >>> G = cc.MaleCNS().compile_label_graph()
-        >>> nx.write_gml(G, "MCNS_label_graph.gml", stringizer=str)
+        >>> G = cc.MaleVNC().compile_label_graph()
+        >>> nx.write_gml(G, "MANC_label_graph.gml", stringizer=str)
 
         """
         assert which_neurons in ("self", "all"), "Invalid `which_neurons`"
@@ -399,10 +321,6 @@ class MaleCNS(JaneliaDataSet):
             if not len(self):
                 raise ValueError("No neurons in dataset")
             ann = ann[ann.bodyId.isin(self.neurons)].copy()
-
-        # Drop some known bad types
-        if self.exclude_bad_types:
-            ann.loc[ann.type.isin(MCNS_BAD_TYPES), "type"] = None
 
         # Some clean-up
         if "group" in ann.columns:
@@ -425,8 +343,8 @@ class MaleCNS(JaneliaDataSet):
             # For each {bodyID: group} also add {group: group}
             groups.update({int(v): v for v in groups.values()})
 
-            # Rename groups to "mcns_group_{group}"
-            groups = {k: f"mcns_group_{v}" for k, v in groups.items()}
+            # Rename groups to "manc_group_{group}"
+            groups = {k: f"manc_group_{v}" for k, v in groups.items()}
 
             ann["group"] = ann.bodyId.map(groups)
 
@@ -443,8 +361,8 @@ class MaleCNS(JaneliaDataSet):
             num_inst = num_inst.set_index("bodyId").instance.to_dict()
             num_inst.update({v: v for v in num_inst.values()})
 
-            # Rename these ID instances to "mcns_instance_{ID}"
-            num_inst = {k: f"mcns_instance_{v}" for k, v in num_inst.items()}
+            # Rename these ID instances to "manc_instance_{ID}"
+            num_inst = {k: f"manc_instance_{v}" for k, v in num_inst.items()}
 
             ann["instance"] = ann.bodyId.map(num_inst)
 
@@ -461,8 +379,8 @@ class MaleCNS(JaneliaDataSet):
         if strict:
             ann = ann.copy()  # avoid SettingWithCopyWarning
             for col, name in zip(
-                ("type", "hemibrain_type", "flywire_type", "manc_type"),
-                ("malecns", "hemibrain", "flywire", "manc"),
+                ("type", "hemibrain_type", "flywire_type"),
+                ("manc", "hemibrain", "flywire"),
             ):
                 if col not in ann.columns:
                     continue
@@ -505,7 +423,7 @@ class MaleCNS(JaneliaDataSet):
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
         # For example:
-        # G.nodes['node']['antonyms_in'] = ("MCNS")
+        # G.nodes['node']['antonyms_in'] = ("MANC")
 
         if collapse_neurons:
             G = collapse_neuron_nodes(G)
@@ -526,13 +444,13 @@ class MaleCNS(JaneliaDataSet):
             if hasattr(self, "types_"):
                 types = self.types_
             else:
-                types = _get_mcns_types(
+                types = _get_manc_types(
                     add_side=False,
                     backfill_types=self.backfill_types,
                     source=self.meta_source,
                 )
 
-        # Fetch connectivity vectors
+        # Fetch hemibrain vectors
         if self.upstream:
             # print("Fetching upstream connectivity... ", end="", flush=True)
             if isinstance(self.cn_object, pd.DataFrame):
@@ -564,7 +482,7 @@ class MaleCNS(JaneliaDataSet):
                     col="pre",
                     sides=None
                     if not self.use_sides
-                    else _get_mcns_sides(source=self.meta_source),
+                    else _get_manc_sides(source=self.meta_source),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
             # print("Done!")
@@ -598,7 +516,7 @@ class MaleCNS(JaneliaDataSet):
                     ds,
                     types=types,
                     col="post",
-                    sides=None if not self.use_sides else _get_mcns_meta(),
+                    sides=None if not self.use_sides else _get_manc_meta(),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -626,7 +544,7 @@ class MaleCNS(JaneliaDataSet):
 def _collapse_connectivity_types(type_dict, source="clio"):
     """Remove connectivity type suffixes from {ID: type} dictionary."""
     type_dict = type_dict.copy()
-    hb_meta = _get_mcns_meta(source=source)
+    hb_meta = _get_manc_meta(source=source)
     cn2morph = hb_meta.set_index("type").morphology_type.to_dict()
     for k, v in type_dict.items():
         new_v = ",".join([cn2morph.get(t, t) for t in v.split(",")])
