@@ -20,17 +20,17 @@ FlyWire left vs hemibrain:
 
 FlyWire left vs right:
 
-720575940643300974(L) --> AOTU008a - - - - |
+720575940643300974(L) --> AOTU008a --------|
                              ^             |
                              |             |
                              v             v
-720575940622365991(R) --> AOTU008a - - > AOTU008
+720575940622365991(R) --> AOTU008a --- > AOTU008
                                            ^ ^
-720575940623374218(L) --> AOTU008b - - - - | |
+720575940623374218(L) --> AOTU008b --------| |
                              ^               |
                              |               |
                              v               |
-720575940629805327(R) --> AOTU008b - - - - - -
+720575940629805327(R) --> AOTU008b ----------|
 
 Note how we can map AOTU008a and AOTU008b between the two datasets without having
 to go through AOTU008. This is because we have a direct mapping between AOTU008a and AOTU008b.
@@ -48,7 +48,7 @@ FlyWire left vs right vs hemibrain:
                              ^               |
                              |               |
                              v               |
-720575940629805327(R) --> AOTU008b -----------
+720575940629805327(R) --> AOTU008b ----------|
 
 In this scenario, we need to go through AOTU008 to map AOTU008a and AOTU008b between the two datasets.
 
@@ -78,6 +78,17 @@ from .utils import collapse_neuron_nodes, printv
 # - add some quality control functions:
 #   - labels with mismatch in numbers of neurons between datasets
 #   - large groups of unmatched labels
+
+
+def mark_stale(func):
+    """Decorator to mark the instance as stale after a method has been called."""
+
+    def wrapper(self, *args, **kwargs):
+        res = func(self, *args, **kwargs)
+        self._stale = True
+        return res
+
+    return wrapper
 
 
 class BaseMapper:
@@ -250,10 +261,10 @@ class BaseMapper:
             if not isinstance(ds, DataSet) and not issubclass(ds, DataSet):
                 raise TypeError(f'Expected dataset(s), got "{type(ds)}"')
 
+    @mark_stale
     def clear_cache(self):
         """Clear mappings."""
         self._CACHE.clear()
-        self._stale = True
 
     @abstractmethod
     def compile(self, verbose=True):
@@ -409,8 +420,10 @@ class GraphMapper(BaseMapper):
         self._synonyms = {}
         self._graph_processors = []
         self._bad_labels = []
+        self._good_labels = []
         super().__init__(*datasets, verbose=verbose)
 
+    @mark_stale
     def add_synonym(self, label, synonym):
         """Add a synonym to the mapping.
 
@@ -423,19 +436,27 @@ class GraphMapper(BaseMapper):
 
         """
         self._synonyms[label] = self._synonyms.get(label, set()) | {synonym}
-        # Mark as stale
-        self._stale = True
-
         return self
 
+    @mark_stale
     def add_bad_labels(self, labels):
         """Add bad label(s) that should be ignored for the mapping."""
-        self._bad_labels.extend(labels)
-        # Mark as stale
-        self._stale = True
+        if not isinstance(labels, (list, set, tuple)):
+            labels = [labels]
 
+        self._bad_labels.extend(labels)
         return self
 
+    @mark_stale
+    def add_good_labels(self, labels):
+        """Add good label(s) that should be included in the mapping even if they aren't present in all datasets."""
+        if not isinstance(labels, (list, set, tuple)):
+            labels = [labels]
+
+        self._good_labels.extend(labels)
+        return self
+
+    @mark_stale
     def add_graph_processor(self, processor):
         """Add a graph processor to the mapping.
 
@@ -522,7 +543,9 @@ class GraphMapper(BaseMapper):
             for proc in self._graph_processors:
                 G = proc(G)
                 if not isinstance(G, nx.Graph):
-                    raise ValueError(f"Graph processor must return a graph, got {type(G)}")
+                    raise ValueError(
+                        f"Graph processor must return a graph, got {type(G)}"
+                    )
 
             mappings = {}
             keep_edges = set()
@@ -558,7 +581,7 @@ class GraphMapper(BaseMapper):
 
         self.report(
             f"Building across-dataset mapping for {ds_string}... ",
-            end="",
+            end="\n",
             flush=True,
         )
 
@@ -664,6 +687,7 @@ class GraphMapper(BaseMapper):
                 # Add all nodes in the path to the keep set
                 keep.update(this_targets[target])
 
+                # Track edge weights as number of neurons that point to a label
                 for s, t in zip(this_targets[target], this_targets[target][1:]):
                     keep_edges[(s, t)] = keep_edges.get((s, t), 0) + 1
 
@@ -734,7 +758,7 @@ class GraphMapper(BaseMapper):
             # Remove edges
             if len(self.spurious_edges_):
                 self.report(
-                    f"\nRemoving {len(self.spurious_edges_)} potentially spurious edges from the graph.",
+                    f"  Removing {len(self.spurious_edges_)} potentially spurious edges from the graph.",
                     flush=True,
                 )
                 # Note to self: in a previous version I had issues that some edges were not removed
@@ -772,6 +796,29 @@ class GraphMapper(BaseMapper):
             for l in ccn - ccn_labels:
                 mappings[l] = new_label
 
+        # Add good labels - note that this is will not be reflected in the (trimmed) graph
+        n_good = 0
+        for l in self._good_labels:
+            if l not in G.nodes:
+                self.report(
+                    f"  Skipping good label '{l}' - not found in the graph.", flush=True
+                )
+                continue
+
+            for n in G.predecessors(l):
+                if not G.nodes[n].get("type", None) == "neuron":
+                    continue
+                if n in mappings:
+                    continue
+                mappings[n] = l
+                n_good += 1
+
+        if n_good:
+            self.report(
+                f"  Manually added {len(self._good_labels)} good labels to {n_good} neurons.",
+                flush=True,
+            )
+
         # Store the results
         self.mappings_ = mappings
         self.graph_ = G_trimmed
@@ -779,12 +826,13 @@ class GraphMapper(BaseMapper):
         # Cache the results
         self._CACHE[self_identifier] = self
 
-        self.report("Done.", flush=True)
-
         self.report(
-            f"Found {len(set(self.mappings_.values()))} unique labels covering {len(self.mappings_)} neurons.",
+            f"  Found {len(set(self.mappings_.values()))} unique labels covering {len(self.mappings_)} neurons.",
             flush=True,
         )
+
+        self.report("All Done.", flush=True)
+
         self._stale = False
         return self
 
@@ -1004,7 +1052,11 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
     # Split in two. Note: this may not actually split into two connected components!
     split = nx.community.greedy_modularity_communities(G, best_n=2, weight="weight")
 
-    printv(f"Trying to split {G.nodes} into {len(split)} groups ({n_ds} = {ratio}).", verbose=verbose, flush=True)
+    printv(
+        f"Trying to split {G.nodes} into {len(split)} groups ({n_ds} = {ratio}).",
+        verbose=verbose,
+        flush=True,
+    )
 
     # Check if the split is valid
     valid = len(split) > 1
@@ -1012,12 +1064,11 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
         # If the set of datasets in this connected component is not the same as the
         # set of datasets in the entire graph, we must reject the split
         neurons = [n for n in group if G.nodes[n].get("type", None) == "neuron"]
-        if not ds == {
-            G.nodes[n].get("dataset", None)
-            for n in neurons
-        }:
+        if not ds == {G.nodes[n].get("dataset", None) for n in neurons}:
             valid = False
-            printv(f"  Rejected: invalid group {list(group)}.", flush=True, verbose=verbose)
+            printv(
+                f"  Rejected: invalid group {list(group)}.", flush=True, verbose=verbose
+            )
             break
 
         # Check if the ratios between datasets are similar
@@ -1031,7 +1082,11 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
             # Reject split if the ratios get much worse
             if (ratio2 / ratio > 2.5) or (ratio / ratio2 > 2.5):
                 valid = False
-                printv(f"  Rejected: invalid ratios for group {list(group)} ({n_ds} = {ratio2} vs {ratio}).", flush=True, verbose=verbose)
+                printv(
+                    f"  Rejected: invalid ratios for group {list(group)} ({n_ds} = {ratio2} vs {ratio}).",
+                    flush=True,
+                    verbose=verbose,
+                )
                 break
 
     if not valid:
