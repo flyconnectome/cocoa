@@ -37,7 +37,6 @@ DISTS_DTYPE = np.float32
 VECT_DTYPE = np.uint16
 
 
-
 def req_compile(func):
     """Check if we need to compile connectivity."""
 
@@ -60,6 +59,7 @@ class Clustering:
                 Alternatively, datasets can be added using the `add_dataset`.
 
     """
+
     def __init__(self, *datasets):
         self._datasets = []
         self.add_dataset(datasets)
@@ -172,14 +172,16 @@ class Clustering:
             method=method,
             preserve_input=preserve_input,  # note: this doesn't do anything if our distances are float32
         )
+
     def compile(
         self,
-        join="existing",
+        join="outer",
         metric="cosine",
         mapper=GraphMapper,
         force_recompile=False,
         exclude_labels=None,
         include_labels=None,
+        ignore_unlabeled=True,
         cn_frac_threshold=None,
         augment=None,
         n_batches="auto",
@@ -197,18 +199,25 @@ class Clustering:
                       - "inner" will get the intersection of all labels across
                         the connectivity vectors
                       - "outer" will use all available labels
+                    Note: if you are using a GraphMapper, you should use "outer"
+                    as the mapper will already have filtered out non-matching
+                    labels.
         metric :    "cosine" | "Euclidean"
                     Metric to use for distance calculations.
-        mapper :    cocoa.Mapper
+        mapper :    cocoa.Mapper | dict
                     The mapper used to match neuron labels across datasets.
                     Examples are `cocoa.GraphMapper` and `cocoa.SimpleMapper`.
                     See the mapper's documentation for more information.
+                    Alternatively, you can also provide a dictionary that maps
+                    IDs to labels.
         exclude_labels : str | list of str, optional
                     If provided will exclude given labels from the observation
                     vector. This uses regex!
         include_labels : str | list of str, optional
                     If provided will only include given labels from the
                     observation vector. This uses regex!
+        ignore_unlabeled : bool
+                    If True (default), will ignore neurons without labels.
         force_recompile : bool
                     If True, will recompile connectivity vectors for each data
                     set even if they already exist.
@@ -238,7 +247,7 @@ class Clustering:
             raise TypeError(f'`augment` must be DataFrame, got "{type(augment)}"')
 
         mapper_type = type(mapper) if not isinstance(mapper, type) else mapper
-        if not issubclass(mapper_type, BaseMapper):
+        if not issubclass(mapper_type, BaseMapper) and not isinstance(mapper, dict):
             raise TypeError(f'`mapper` must be a Mapper, got "{mapper_type}"')
 
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
@@ -266,8 +275,12 @@ class Clustering:
         # Generate the mappings
         if isinstance(mapper, type):
             mapper = mapper(verbose=verbose)
-        self.mapper_ = mapper.add_dataset(*self.datasets)
-        self.mappings_ = self.mapper_.get_mappings()
+
+        if isinstance(mapper, dict):
+            self.mappings_ = mapper
+        else:
+            self.mapper_ = mapper.add_dataset(*self.datasets)
+            self.mappings_ = self.mapper_.get_mappings()
 
         printv("Combining connectivity vectors... ", verbose=verbose, end="")
 
@@ -279,6 +292,7 @@ class Clustering:
             up = _add_types(
                 up,
                 types=self.mappings_,
+                drop_untyped=ignore_unlabeled,  # drop untyped neurons
                 col="pre",
                 sides=None,
                 sides_rel=False,
@@ -287,6 +301,7 @@ class Clustering:
             down = _add_types(
                 down,
                 types=self.mappings_,
+                drop_untyped=ignore_unlabeled,  # drop untyped neurons
                 col="post",
                 sides=None,
                 sides_rel=False,
@@ -327,6 +342,13 @@ class Clustering:
                 for ds in self.datasets:
                     exists[~ds.label_exists(to_use)] = False
                 to_use = np.array(to_use)[exists]
+
+        # Drop the neuron IDs from `to_use` (they may sneak in from the edges)
+        to_use = [
+            t
+            for t in to_use
+            if t not in [i for ds in self.datasets for i in ds.neurons]
+        ]
 
         # Exclude labels
         if exclude_labels is not None:
@@ -376,10 +398,14 @@ class Clustering:
             adj = ds.edges_proc_.groupby(["pre", "post"]).weight.sum().unstack()
             # Get downstream adjacency (rows = queries, columns = shared targets)
             down = adj.reindex(index=ds.neurons, columns=to_use)
-            down.columns = pd.MultiIndex.from_tuples([('downstream', c) for c in down.columns])
+            down.columns = pd.MultiIndex.from_tuples(
+                [("downstream", c) for c in down.columns]
+            )
             # Get upstream adjacency (rows = shared inputs, columns = queries)
             up = adj.reindex(columns=ds.neurons, index=to_use).T
-            up.columns = pd.MultiIndex.from_tuples([('upstream', c) for c in up.columns])
+            up.columns = pd.MultiIndex.from_tuples(
+                [("upstream", c) for c in up.columns]
+            )
             adjacencies.append(pd.concat((down, up), axis=1).fillna(0))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
@@ -439,7 +465,9 @@ class Clustering:
         return self
 
     @req_compile
-    def to_table(self, clusters=None, link_method="ward", orient="neurons", linkage=None):
+    def to_table(
+        self, clusters=None, link_method="ward", orient="neurons", linkage=None
+    ):
         """Generate a table in the same the order as dendrogram.
 
         Parameters
@@ -635,7 +663,9 @@ class Clustering:
             raise ValueError(f'Unknown output format "{out}"')
 
     @req_compile
-    def plot_dendrogram(self, color_by="dataset", cmap="tab10", ax=None, linkage=None, **kwargs):
+    def plot_dendrogram(
+        self, color_by="dataset", cmap="tab10", ax=None, linkage=None, **kwargs
+    ):
         """Plot dendrogram.
 
         Parameters
@@ -1147,7 +1177,7 @@ def generate_clustering(
             mcns_ann = mcns.get_annotations()
 
             if "rootSide" in mcns_ann.columns:
-                mcns_ann['somaSide'] = mcns_ann.somaSide.fillna(mcns_ann.rootSide)
+                mcns_ann["somaSide"] = mcns_ann.somaSide.fillna(mcns_ann.rootSide)
 
             is_left = np.isin(
                 mcns.neurons,
