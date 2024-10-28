@@ -66,6 +66,7 @@ FLYWIRE_LIVE_COLUMNS = [
     "malecns_type",
     "ito_lee_hemilineage",
     "side",
+    "nerve",
     "status",
 ]
 
@@ -294,6 +295,10 @@ def _get_mcns_meta(source):
         # Currently, Clio has both a `rootSide` and `root_side` column
         # Only the later is really useful.
         ann = ann.drop("rootSide", errors="ignore", axis=1)
+
+        # Drop empty strings (from e.g. `type` column)
+        for c in ann.columns:
+            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
 
         return ann.rename(
             {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
