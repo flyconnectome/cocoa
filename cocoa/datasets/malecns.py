@@ -252,7 +252,7 @@ class MaleCNS(JaneliaDataSet):
         return x
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_mcns_meta.cache_clear()
         _get_mcns_types.cache_clear()
         _get_mcns_meta.cache_clear()
@@ -260,14 +260,21 @@ class MaleCNS(JaneliaDataSet):
 
         return self
 
-    def get_annotations(self):
-        """Return annotations."""
-        # Clio returns a "bodyid" column, neuprint a "bodyId" column
-        ann = _get_mcns_meta(source=self.meta_source).copy()
+    def get_annotations(self, source=None):
+        """Return annotations.
 
-        # Drop empty strings (from e.g. `type` column)
-        for c in ann.columns:
-            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
+        Parameters
+        ----------
+        source :    "neuprint" | "clio"
+                    Source for annotations. If `None`, will use the default source set during
+                    dataset creation.
+
+        """
+        if source is None:
+            source = self.meta_source
+
+        # Clio returns a "bodyid" column, neuprint a "bodyId" column
+        ann = _get_mcns_meta(source=source).copy()
 
         return ann
 
