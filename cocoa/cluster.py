@@ -217,7 +217,8 @@ class Clustering:
                     If provided will only include given labels from the
                     observation vector. This uses regex!
         ignore_unlabeled : bool
-                    If True (default), will ignore neurons without labels.
+                    If True (default), will ignore neurons without labels. If
+                    False, will treat unlabled neurons as their own label.
         force_recompile : bool
                     If True, will recompile connectivity vectors for each data
                     set even if they already exist.
@@ -280,7 +281,7 @@ class Clustering:
             self.mappings_ = mapper
         else:
             self.mapper_ = mapper.add_dataset(*self.datasets)
-            self.mappings_ = self.mapper_.get_mappings()
+            self.mappings_ = self.mapper_.get_mappings()  # compiles if necessary
 
         printv("Combining connectivity vectors... ", verbose=verbose, end="")
 
@@ -334,6 +335,10 @@ class Clustering:
             for ds in self.datasets[1:]:
                 to_use = to_use | set(ds.edges_proc_.pre.unique().tolist())
                 to_use = to_use | set(ds.edges_proc_.post.unique().tolist())
+
+            if ignore_unlabeled:
+                to_use = to_use & set(self.mappings_.values())
+
             to_use = list(to_use)
             # For each label check if it exists "in theory" in all datasets
             # even if it's not present in the connectivity vectors
