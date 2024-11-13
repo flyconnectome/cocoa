@@ -326,7 +326,6 @@ class Clustering:
                     set(ds.edges_proc_.pre.unique().tolist())
                     | set(ds.edges_proc_.post.unique().tolist())
                 )
-            to_use = list(to_use)
         elif join in ("outer", "existing"):
             # Get all labels
             to_use = set(self.datasets[0].edges_proc_.pre.unique().tolist()) | set(
@@ -336,24 +335,21 @@ class Clustering:
                 to_use = to_use | set(ds.edges_proc_.pre.unique().tolist())
                 to_use = to_use | set(ds.edges_proc_.post.unique().tolist())
 
-            if ignore_unlabeled:
-                to_use = to_use & set(self.mappings_.values())
-
-            to_use = list(to_use)
             # For each label check if it exists "in theory" in all datasets
             # even if it's not present in the connectivity vectors
             if join == "existing":
+                to_use = np.array(list(to_use))
                 exists = np.ones(len(to_use), dtype=bool)
                 for ds in self.datasets:
                     exists[~ds.label_exists(to_use)] = False
-                to_use = np.array(to_use)[exists]
+                to_use = set(list(to_use[exists]))
 
         # Drop the neuron IDs from `to_use` (they may sneak in from the edges)
-        to_use = [
-            t
-            for t in to_use
-            if t not in [i for ds in self.datasets for i in ds.neurons]
-        ]
+        if ignore_unlabeled:
+            to_use = to_use & set(self.mappings_.values())
+
+        # Convert to array
+        to_use = np.array(list(to_use))
 
         # Exclude labels
         if exclude_labels is not None:
@@ -380,6 +376,11 @@ class Clustering:
                     verbose=verbose,
                 )
                 to_use = to_use[np.isin(to_use, list(to_include))]
+
+        printv(
+            f"  Using {len(to_use):,} unique labels for clustering.",
+            verbose=verbose,
+        )
 
         # Subset edge lists to these labels
         for ds in self.datasets:
