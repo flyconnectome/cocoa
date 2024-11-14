@@ -401,8 +401,8 @@ class GraphMapper(BaseMapper):
     strict :        bool
                     If False (default), will try to establish a mapping greedily
                     by looking for matching labels. If True, will only match labels
-                    that are meant to be match - e.g. FlyWire "cell_type" to
-                    maleCNS "flywire_type".
+                    that are meant to be a match - e.g. FlyWire "cell_type" to
+                    maleCNS "flywire_type" or FlyWire "male_cns_type" to male CNS "type".
     verbose :       bool
                     If True, will print progress messages.
 
@@ -441,7 +441,7 @@ class GraphMapper(BaseMapper):
     @mark_stale
     def add_bad_labels(self, labels):
         """Add bad label(s) that should be ignored for the mapping."""
-        if not isinstance(labels, (list, set, tuple)):
+        if not isinstance(labels, (list, set, tuple, np.ndarray)):
             labels = [labels]
 
         self._bad_labels.extend(labels)
@@ -450,7 +450,7 @@ class GraphMapper(BaseMapper):
     @mark_stale
     def add_good_labels(self, labels):
         """Add good label(s) that should be included in the mapping even if they aren't present in all datasets."""
-        if not isinstance(labels, (list, set, tuple)):
+        if not isinstance(labels, (list, set, tuple, np.ndarray)):
             labels = [labels]
 
         self._good_labels.extend(labels)
@@ -827,7 +827,7 @@ class GraphMapper(BaseMapper):
         self._CACHE[self_identifier] = self
 
         self.report(
-            f"  Found {len(set(self.mappings_.values()))} unique labels covering {len(self.mappings_)} neurons.",
+            f"  Found {len(set(self.mappings_.values())):,} unique labels covering {len(self.mappings_):,} neurons.",
             flush=True,
         )
 
