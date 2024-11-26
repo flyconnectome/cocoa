@@ -372,7 +372,7 @@ class FlyWire(DataSet):
         G.add_nodes_from(ann.root_id, type="neuron")
 
         # Order of labels
-        cols = ["malecns_type", "cell_type", "hemibrain_type"]
+        cols = ("malecns_type", "cell_type", "hemibrain_type")
         for col in cols:
             # Skip if this column doesn't exist
             if col not in ann.columns:
@@ -381,6 +381,8 @@ class FlyWire(DataSet):
             this = ann[ann[col].notnull()]
             # Add edges
             G.add_edges_from(zip(this.root_id, this[col]))
+            # Track which column(s) this label came from
+            nx.set_edge_attributes(G, {e: {col: True} for e in zip(this.root_id, this[col])})
 
             # Take care of compound types
             comp = this[
@@ -394,6 +396,7 @@ class FlyWire(DataSet):
             for c, count in zip(*np.unique(comp, return_counts=True)):
                 for c2 in c.split(","):
                     G.add_edge(c.strip(), c2.strip(), weight=count)
+                    nx.set_edge_attributes(G, {(c.strip(), c2.strip()): {col: True}})
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.

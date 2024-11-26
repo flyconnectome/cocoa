@@ -300,6 +300,9 @@ class Hemibrain(JaneliaDataSet):
 
             G.add_edges_from(zip(types.bodyId, types[col]))
 
+            # Track which column(s) this label came from
+            nx.set_edge_attributes(G, {e: {col: True} for e in zip(types.bodyId, types[col])})
+
         if collapse_neurons:
             G = collapse_neuron_nodes(G)
 
