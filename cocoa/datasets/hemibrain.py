@@ -177,7 +177,7 @@ class Hemibrain(JaneliaDataSet):
         return x
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_hemibrain_meta.cache_clear()
         _get_hemibrain_types.cache_clear()
         _get_hb_sides.cache_clear()
@@ -308,7 +308,7 @@ class Hemibrain(JaneliaDataSet):
 
         return G
 
-    def compile(self):
+    def compile(self, collapse_types=False, collapse_rois=True):
         """Compile connectivity vector."""
         client = self.neuprint_client
 
@@ -329,16 +329,29 @@ class Hemibrain(JaneliaDataSet):
             # For cases where {12345: '12345,56788'} (i.e. new types)
             # types.update(collapse_types)
 
-        # Fetch hemibrain vectors
+        # Fetch connectivity vectors
         if self.upstream:
-            _, us = neu.fetch_adjacencies(
-                targets=neu.NeuronCriteria(bodyId=x, client=client), client=client
-            )
+            # print("Fetching upstream connectivity... ", end="", flush=True)
+            if isinstance(self.cn_object, pd.DataFrame):
+                us = self.cn_object[self.cn_object.bodyId_post.isin(x)]
+                if self.rois is not None:
+                    us = us[us.roi.isin(self.rois)]
+                us = us.copy()  # avoid SettingWithCopyWarning
+            else:
+                _, us = neu.fetch_adjacencies(
+                    targets=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client
+                )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
             us.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
+            # Collapse ROIs here before we (potentially) add types
+            if collapse_rois:
+                us = us.groupby(["pre", "post"], as_index=False).weight.sum()
+
             if self.use_types:
                 us = _add_types(
                     us,
@@ -351,9 +364,17 @@ class Hemibrain(JaneliaDataSet):
                 )
 
         if self.downstream:
-            _, ds = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x, client=client), client=client
-            )
+            if isinstance(self.cn_object, pd.DataFrame):
+                ds = self.cn_object[self.cn_object.bodyId_pre.isin(x)]
+                if self.rois is not None:
+                    ds = ds[ds.roi.isin(self.rois)]
+                ds = ds.copy()  # avoid SettingWithCopyWarning
+            else:
+                _, ds = neu.fetch_adjacencies(
+                    sources=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client
+                )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
             ds.rename(
@@ -384,6 +405,11 @@ class Hemibrain(JaneliaDataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        if collapse_types:
+            # Make sure to keep "roi" if it still exits
+            cols = [c for c in ["pre", "post", "roi"] if c in self.edges_.columns]
+            self.edges_ = self.edges_.groupby(cols, as_index=False).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types
