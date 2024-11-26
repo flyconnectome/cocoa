@@ -292,16 +292,22 @@ def _get_mcns_meta(source):
         client = _get_clio_client("CNS")
         ann = clio.fetch_annotations(None, client=client)
 
-        # Currently, Clio has both a `rootSide` and `root_side` column
-        # Only the later is really useful.
-        ann = ann.drop("rootSide", errors="ignore", axis=1)
-
-        # Drop empty strings (from e.g. `type` column)
+        # Some processing to align between the two sources
+        # 1. Drop empty strings (from e.g. `type` column)
+        # 2. Turn column names from snake_case to camelCase
+        new_col_names = {}
         for c in ann.columns:
             ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
+            if "_" in c:
+                new_col_names[c] = "".join(
+                    [w.capitalize() if i > 0 else w for i, w in enumerate(c.split("_"))]
+                )
+
+        # Rename columns
+        new_col_names['bodyid'] = 'bodyId'
 
         return ann.rename(
-            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
+            new_col_names,
             axis=1,
         )
     else:
