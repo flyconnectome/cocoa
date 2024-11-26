@@ -120,6 +120,14 @@ class BaseMapper:
     def type(self):
         return str(type(self))[:-2].split(".")[-1]
 
+    @property
+    def mappings_inv_(self):
+        """Inverted mappings."""
+        m = {}
+        for k, v in self.mappings_.items():
+            m[v] = m.get(v, []) + [k]
+        return m
+
     def add_dataset(self, *datasets, skip_existing=True):
         """Add dataset(s)."""
         for ds in datasets:
