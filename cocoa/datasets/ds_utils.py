@@ -374,17 +374,24 @@ def _get_fw_types(mat, add_side=False, live=False, exclude_bad_types=True):
     else:
         table = _load_live_flywire_annotations(mat=mat)
 
-    # Backfill types
+    # Do not modify the original table
+    table = table.copy()
+
     type_cols = ("cell_type", "malecns_type", "hemibrain_type")
+
+    # Sanitize type columns
+    if exclude_bad_types:
+        for col in type_cols:
+            if col not in table.columns:
+                continue
+            table.loc[table[col].isin(FLYWIRE_BAD_TYPES), col] = None
+
+    # Backfill types
     table["type"] = None
     for col in type_cols:
         if col in table.columns:
             table["type"] = table["type"].fillna(table[col])
     typed = table[table.type.notnull()]
-
-    # Drop some known bad types
-    if exclude_bad_types:
-        typed = typed[~typed.type.isin(FLYWIRE_BAD_TYPES)]
 
     if add_side:
         typed = typed.copy()  # Avoid SettingWithCopyWarnings
