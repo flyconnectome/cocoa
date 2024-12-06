@@ -507,7 +507,12 @@ def _get_manc_types(
 def _backfill_types(meta, backfill_types):
     """Backfill types from other columns."""
     for col in backfill_types:
-        if col not in meta.columns:
+        if "_" in col:
+            col_alt = col.split("_")[0] + "".join([w.capitalize() for w in col.split("_")[1:]])
+
+        if col_alt in meta.columns:
+            col = col_alt
+        elif col not in meta.columns:
             continue
 
         # For "group" and "instance" we need to do a bit of clean-up first
