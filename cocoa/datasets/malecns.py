@@ -90,7 +90,7 @@ class MaleCNS(JaneliaDataSet):
         upstream=True,
         downstream=True,
         use_types=False,
-        backfill_types=("flywire_type", "hemibrain_type", "manc_type"),
+        backfill_types=True,
         exclude_bad_types=True,
         exclude_autapses=True,
         use_sides=False,
@@ -260,7 +260,7 @@ class MaleCNS(JaneliaDataSet):
 
         return self
 
-    def get_annotations(self, source=None):
+    def get_annotations(self, source=None, clear_cache=False):
         """Return annotations.
 
         Parameters
@@ -268,10 +268,15 @@ class MaleCNS(JaneliaDataSet):
         source :    "neuprint" | "clio"
                     Source for annotations. If `None`, will use the default source set during
                     dataset creation.
+        clear_cache : bool
+                    Whether to clear the cache before fetching the data.
 
         """
         if source is None:
             source = self.meta_source
+
+        if clear_cache:
+            _get_mcns_meta.cache_clear()
 
         # Clio returns a "bodyid" column, neuprint a "bodyId" column
         ann = _get_mcns_meta(source=source).copy()

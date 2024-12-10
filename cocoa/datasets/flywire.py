@@ -305,7 +305,7 @@ class FlyWire(DataSet):
         return np.isin(x, list(G.nodes))
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _load_live_flywire_annotations.cache_clear()
         _load_static_flywire_annotations.cache_clear()
         _get_fw_sides.cache_clear()
