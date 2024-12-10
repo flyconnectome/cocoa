@@ -495,6 +495,7 @@ class MaleCNS(JaneliaDataSet):
             this = ann[ann[col].notnull()]
             # Add edges
             G.add_edges_from(zip(this.bodyId, this[col]))
+
             # Track which column(s) this label came from
             nx.set_edge_attributes(G, {e: {col: True} for e in zip(this.bodyId, this[col])})
 

@@ -1037,6 +1037,7 @@ def generate_clustering(
     fw=None,
     hb=None,
     mcns=None,
+    manc=None,
     split_lr=True,
     ignore_hb_l=True,
     live_annot=False,
@@ -1047,6 +1048,7 @@ def generate_clustering(
     exclude_queries=False,
     mcns_cn_object=None,
     hemibrain_cn_object=None,
+    manc_cn_object=None,
     clear_caches=False,
 ):
     """Shortcut for generating a clustering on the pre-defined datasets.
@@ -1061,6 +1063,9 @@ def generate_clustering(
                 into left and right. See also `split_lr` parameter.
     mcns :      str | int | list thereof
                 MaleCNS body ID(s) or cell type(s). Will automatically be split
+                into left and right. See also `split_lr` parameter.
+    manc :      str | int | list thereof
+                MaleVNC body ID(s) or cell type(s). Will automatically be split
                 into left and right. See also `split_lr` parameter.
     split_lr :  bool
                 If True, will split IDs into left and right automatically.
@@ -1077,7 +1082,7 @@ def generate_clustering(
     fw_materialization : int
                 Materialization to use for FlyWire. Must match `fw_cn_file` if
                 that is provided.
-    mcns_cn_object : str | pd.DataFrame
+    mcns/hb/mcns_cn_object : str | pd.DataFrame
                 Either a DataFrame or path to a `.feather` connectivity file which
                 will be loaded into a DataFrame. The DataFrame is expected to
                 come from `neuprint.fetch_adjacencies` and include all relevant
@@ -1140,6 +1145,7 @@ def generate_clustering(
             live_annot=live_annot,
             upstream=upstream,
             downstream=downstream,
+            cn_object=hemibrain_cn_object,
             label="HB",
         ).add_neurons(hb)
 
@@ -1169,6 +1175,7 @@ def generate_clustering(
                         upstream=upstream,
                         downstream=downstream,
                         exclude_queries=exclude_queries,
+                        cn_object=hemibrain_cn_object,
                         label="HbR",
                     ).add_neurons(np.array(hb.neurons)[~is_left])
                 )
@@ -1216,6 +1223,52 @@ def generate_clustering(
                 datasets.append(mcns_right)
         elif len(mcns.neurons):
             datasets.append(mcns)
+
+    if manc is not None:
+        if clear_caches:
+            MaleVNC().clear_cache()
+
+        # Use the dataset to parse `hb` into body IDs
+        manc = MaleVNC(
+            upstream=upstream,
+            downstream=downstream,
+            cn_object=manc_cn_object,
+            label="MANC",
+        ).add_neurons(manc)
+
+        # Now split into left/right
+        if split_lr:
+            manc_ann = manc.get_annotations()
+            is_left = np.isin(
+                manc.neurons,
+                manc_ann[
+                    (manc_ann.somaSide == "LHS") | (manc_ann.rootSide == "LHS")
+                ].bodyId.astype(int),
+            )
+
+            if any(is_left):
+                datasets.append(
+                    MaleVNC(
+                        upstream=upstream,
+                        downstream=downstream,
+                        exclude_queries=exclude_queries,
+                        cn_object=manc_cn_object,
+                        label="MancL",
+                    ).add_neurons(np.array(manc.neurons)[is_left])
+                )
+
+            if any(~is_left):
+                datasets.append(
+                    MaleVNC(
+                        upstream=upstream,
+                        downstream=downstream,
+                        exclude_queries=exclude_queries,
+                        cn_object=manc_cn_object,
+                        label="MancR",
+                    ).add_neurons(np.array(manc.neurons)[~is_left])
+                )
+        elif len(manc.neurons):
+            datasets.append(manc)
 
     if not len(datasets):
         raise ValueError("Must provide IDs for at least one dataset")

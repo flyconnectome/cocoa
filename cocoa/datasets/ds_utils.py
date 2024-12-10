@@ -495,7 +495,7 @@ def _get_manc_types(
     print(f"Caching male VNC `type` annotations from {source}... ", end="", flush=True)
 
     # This function makes sure that columns have the same name regardless of source
-    meta = _get_mcns_meta(source=source)
+    meta = _get_manc_meta(source=source)
 
     if backfill_types:
         _backfill_types(meta, backfill_types)

@@ -100,7 +100,7 @@ class MaleVNC(JaneliaDataSet):
             if not backfill_types:
                 backfill_types = None
             else:
-                backfill_types = ("group", "instance")
+                backfill_types = ("systematic_type", "group", "instance")
         elif not isinstance(backfill_types, (list, tuple)):
             raise ValueError(
                 "`backfill_types` must be a str, a list or tuple or `None`"
@@ -176,7 +176,7 @@ class MaleVNC(JaneliaDataSet):
         return x
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached in-memory data (e.g. annotations). Does not clear data cached on disk."""
         _get_manc_meta.cache_clear()
         _get_manc_types.cache_clear()
         _get_manc_meta.cache_clear()
@@ -297,7 +297,7 @@ class MaleVNC(JaneliaDataSet):
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
         strict :        bool
-                        If True, will prefix the labels with the type of the label (e.g. "malevnc:PS008").
+                        If True, will prefix the labels with the type of the label (e.g. "manc:SNta19").
 
         Returns
         -------
@@ -322,71 +322,6 @@ class MaleVNC(JaneliaDataSet):
                 raise ValueError("No neurons in dataset")
             ann = ann[ann.bodyId.isin(self.neurons)].copy()
 
-        # Some clean-up
-        if "group" in ann.columns:
-            # First drop any groups that exist only once unless they are for central neurons
-            grp_counts = ann[
-                ann.group.notnull() & (ann.somaSide != "C")
-            ].group.value_counts()
-            ann.loc[ann.group.isin(grp_counts[grp_counts == 1].index), "group"] = None
-
-            # `group` is a body ID of one of the neurons in that group (e.g. 10063)
-            # However, that identity neuron often doesn't have the group itself
-            # so we need to manually fix that
-            groups = (
-                ann[ann.group.notnull()]
-                .set_index("bodyId")["group"]
-                .astype(int)
-                .astype(str)
-                .to_dict()
-            )
-            # For each {bodyID: group} also add {group: group}
-            groups.update({int(v): v for v in groups.values()})
-
-            # Rename groups to "manc_group_{group}"
-            groups = {k: f"manc_group_{v}" for k, v in groups.items()}
-
-            ann["group"] = ann.bodyId.map(groups)
-
-        if "instance" in ann.columns:
-            # Instance is a bit of a mixed bag: we can get things like
-            # `{bodyID}_L` or `({type})_L`, where the latter is a tentative type
-            # which we will ignore for now
-
-            # First get {ID}_L types
-            num_inst = ann.instance.str.extract("^([0-9]+)_[LRM]$")
-            num_inst.columns = ["instance"]
-            num_inst["bodyId"] = ann.bodyId.values
-            num_inst = num_inst[num_inst.instance.notnull()]
-            num_inst = num_inst.set_index("bodyId").instance.to_dict()
-            num_inst.update({v: v for v in num_inst.values()})
-
-            # Rename these ID instances to "manc_instance_{ID}"
-            num_inst = {k: f"manc_instance_{v}" for k, v in num_inst.items()}
-
-            ann["instance"] = ann.bodyId.map(num_inst)
-
-            # Now we need to drop any instances that exist only once unless they are for central neurons
-            inst_counts = ann[
-                ann.instance.notnull() & (ann.somaSide != "C")
-            ].instance.value_counts()
-            ann.loc[
-                ann.instance.isin(inst_counts[inst_counts == 1].index), "instance"
-            ] = None
-
-        # Add dataset prefix to labels
-        # (instance and group are already prefixed)
-        if strict:
-            ann = ann.copy()  # avoid SettingWithCopyWarning
-            for col, name in zip(
-                ("type", "hemibrain_type", "flywire_type"),
-                ("manc", "hemibrain", "flywire"),
-            ):
-                if col not in ann.columns:
-                    continue
-                notnull = ann[col].notnull()
-                ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
-
         # Initialise graph
         G = nx.DiGraph()
 
@@ -404,6 +339,9 @@ class MaleVNC(JaneliaDataSet):
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]
+            if strict:
+                this = this.copy()
+                this[col] = "manc:" + this[col]
             # Add edges
             G.add_edges_from(zip(this.bodyId, this[col]))
             # Track which column(s) this label came from
@@ -412,10 +350,9 @@ class MaleVNC(JaneliaDataSet):
             # Take care of compound types
             comp = this[
                 this[col].str.contains(",", na=False)
-                & ~this[col].str.startswith(
-                    "(", na=False
-                )  # ignore e.g. "(M_adPNm4,M_adPNm5)b"
-                & ~this[col].str.startswith("CB.", na=False)  # ignore e.g. "CB.FB3,4A9"
+                & ~this[col].str.endswith(
+                    ", b", na=False
+                )  # ignore e.g. "DVMn 3a, b"
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):
