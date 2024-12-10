@@ -5,24 +5,26 @@
 `cocoa` is a Python library for **co**mparative **co**nnectomics **a**nalyses.
 
 It implements various dataset-agnostic as well as dataset-specific methods
-for matching, co-clustering and cell typing.
+for matching, co-clustering and cell typing, including fetching annotations,
+connectivity and neurons.
 
 Currently implemented are:
 
 1. FlyWire
 2. hemibrain
-3. maleCNS (not public yet)
+3. MANC
+4. maleCNS (not public yet)
 
 On the TODO list:
 - female adult nerve cord (FANC)
-- male adult never cord (MANC)
+- brain and nerve cord (BANC)
 
-Feel free to open an Issue or a PR if you want another dataset added.
+Feel free to open an Issue or a PR if you want a specific dataset added.
 
 ## Install
 
 ```bash
-pip3 install git+https://github.com/flyconnectome/cocoa.git
+pip3 install git+https://github.com/flyconnectome/cocoa.git -U
 ```
 
 ### Other requirements
@@ -30,14 +32,14 @@ pip3 install git+https://github.com/flyconnectome/cocoa.git
 All dependencies should be installed automatically. However, to use the
 pre-define datasets you will need to set a couple environment variables and
 secrets:
-1. If you want to use the live annotations from flytable make sure to set the
-   `SEATABLE_SERVER` and `SEATABLE_TOKEN` environment variables (see
-   [sea-serpent](https://github.com/schlegelp/sea-serpent))
-2. To use neuPrint datasets (hemibrain, MANC and maleCNS) you need to set your
+1. To use neuPrint datasets (hemibrain, MANC and maleCNS) you need to set your
    API token as `NEUPRINT_APPLICATION_CREDENTIALS`
    (see [neuprint-python](https://github.com/connectome-neuprint/neuprint-python))
-3. To use the CAVE/chunkedgraph datasets (FlyWire, FANC) you need to have your
+2. To use the CAVE/chunkedgraph datasets (FlyWire, FANC) you need to have your
    CAVE token set (see [fafbseg](https://fafbseg-py.readthedocs.io/en/latest/source/tutorials/flywire_setup.html))
+3. For internal use only: if you want to use the live annotations from flytable
+   make sure to set the `SEATABLE_SERVER` and `SEATABLE_TOKEN` environment variables
+   (see [sea-serpent](https://github.com/schlegelp/sea-serpent))
 
 ## Examples
 
