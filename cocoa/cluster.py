@@ -293,9 +293,12 @@ class Clustering:
             up = ds.edges_.loc[ds.edges_.post.isin(ds.neurons)].copy()
             down = ds.edges_.loc[ds.edges_.pre.isin(ds.neurons)].copy()
 
+            # Extract the mappings for this dataset (if necessary)
+            ds_mappings = extract_mappings(self.mappings_, ds)
+
             up = _add_types(
                 up,
-                types=self.mappings_,
+                types=ds_mappings,
                 drop_untyped=ignore_unlabeled,  # drop untyped neurons
                 col="pre",
                 sides=None,
@@ -304,7 +307,7 @@ class Clustering:
 
             down = _add_types(
                 down,
-                types=self.mappings_,
+                types=ds_mappings,
                 drop_untyped=ignore_unlabeled,  # drop untyped neurons
                 col="post",
                 sides=None,

@@ -163,6 +163,22 @@ class BaseMapper:
             self.compile()
         return self.mappings_
 
+    def get_dataset_mappings(self, dataset):
+        """Get mappings for the given dataset.
+
+        Internally, we store mappings as `{"{dataset}:{id}": label}` to account
+        for the same ID existing in multiple datasets. This method will return
+        a dictionary with the mappings for the given dataset without the
+        prefix.
+        """
+        if isinstance(dataset, DataSet):
+            dataset = dataset.type
+        elif not isinstance(dataset, str):
+            raise ValueError("`dataset` must be a dataset type or label.")
+
+        mappings = self.get_mappings()
+        return {k.split(":")[1]: v for k, v in mappings.items() if k.startswith(f"{dataset}:")}
+
     def get_label_counts(self, split_sides=False, label_suspicious=True):
         """Get label counts per dataset.
 
@@ -359,7 +375,9 @@ class SimpleMapper(BaseMapper):
             # Here we simply grab all available labels in the dataset
             # These are `{id: label}` dictionarys which should be equivalent
             # to the "primary" labels in the label graph.
-            mappings.update(ds.get_labels(None))
+            # N.B. that we are prefixing the IDs with the dataset type to avoid
+            # any potential conflicts where the same ID across multiple datasets.
+            mappings.update({f"{ds.type}:{n}": label for n, label in ds.get_labels(None).items()})
 
         # Depending on the combination of datasets, we may have to collapse some of the labels.
         # For example, if FlyWire contains a `PS008,PS009` label, we will have to collapse
@@ -510,7 +528,7 @@ class GraphMapper(BaseMapper):
 
         # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
-        # Build a hashable identifier for this instance
+        # Build a hashable identifier for this mapper instance
         self_identifier = (ds_identifier, self.post_process, self.strict)
         ds_string = ", ".join([d.type for d in datasets])
         if self_identifier in self._CACHE and not force_rebuild:
@@ -534,7 +552,7 @@ class GraphMapper(BaseMapper):
         # If we only have one dataset we only need to get to *a* label and that label
         # should ideally be the most granular label within reach. So for example,
         # a male CNS neuron might have type='MeTu4e' and `flywire_type='MeTu4'` in
-        # which case we need to make sure to map to 'MeTu4e' and not 'MeTu4'.
+        # which case we need to make sure to use 'MeTu4e' and not 'MeTu4'.
         if len(datasets) < 2:
             self.report(
                 f"Building mapping for {ds_string}... ",
@@ -566,7 +584,9 @@ class GraphMapper(BaseMapper):
                 )
                 if not neighbors:
                     continue
-                mappings[n] = neighbors[0]  # use the most granular label
+                # Not strictly necessary since we're only having one dataset but we're tracking
+                # neurons as "{dataset}:{id}" to be consistent with the multi-dataset case
+                mappings[f"{ds.type}:{n}"] = neighbors[0]  # use the most granular label
                 keep_edges.add((n, neighbors[0]))
 
             # Subset the graph. N.B. we're using subgraph_view to make sure we
@@ -605,13 +625,22 @@ class GraphMapper(BaseMapper):
             # Drop bad labels from the graph (if not present will be silently ignored)
             G.remove_nodes_from(self._bad_labels)
 
+            # We may run into issues if the same ID exists in multiple datasets (e.g. MaleCNS & MaleVNC)
+            # To account for that, we will prefix node IDs with the dataset type - e.g. "MaleCNS:12345"
+            nx.relabel_nodes(
+                G,
+                {n: f"{ds.type}:{n}" for n in G.nodes if G.nodes[n].get("type", None)},
+                copy=False,
+            )
+
             # Here we set e.g. "FWR=True" so we can later identify which dataset(s)
-            # a node belongs to (can be multiple!)
+            # a node belongs to. N.B. this can be multiple in case of labels!
             nx.set_node_attributes(G, True, ds.label)
             # Also set a normal node attribute for the neurons in this dataset
             # (this is mainly for convenience when inspecting the graph)
             neurons = [n for n in G.nodes if G.nodes[n].get("type", None) == "neuron"]
             nx.set_node_attributes(G, {n: ds.label for n in neurons}, name="dataset")
+
             # Track how many neurons from this dataset point towards a given label
             n_in = {}
             for n in neurons:
@@ -1105,3 +1134,25 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
             split_check_recursive(G.subgraph(neuron_set).copy(), partitions=partitions)
 
     return partitions
+
+
+def extract_mappings(mappings, dataset):
+    """Extract mappings for a given dataset (if necessary)."""
+    if isinstance(dataset, type):
+        dataset = dataset().type
+    elif isinstance(dataset, DataSet):
+        dataset = dataset.type
+    elif not isinstance(dataset, str):
+        raise ValueError(f"`dataset` must be a Dataset or a string, got {type(dataset)}")
+
+    # First, check if the mappings are actually in the "{dataset}:{id}" format
+    all_str = all(isinstance(k, str) for k in mappings)
+    any_str = any(isinstance(k, str) for k in mappings)
+
+    if not all_str and any_str:
+        raise ValueError("Mixed keys in mappings.")
+
+    if all_str:
+        return {int(k.split(":")[1]): v for k, v in mappings.items() if k.startswith(dataset)}
+    else:
+        return mappings
