@@ -1,11 +1,10 @@
-import fastcluster
-
 import networkx as nx
 import tanglegram as tg
 import numpy as np
+import scipy.cluster.hierarchy as sch
 
-from functools import partial
 from scipy.spatial.distance import squareform
+
 
 
 __all__ = ["extract_homogeneous_clusters"]
@@ -61,7 +60,7 @@ def extract_homogeneous_clusters(
                        that are more dissimilar than 1 even if they don't fullfil
                        the `eval_func`
     min_dist_diff : float, optional
-                    Consider two homogenous clusters that are adjacent two each
+                    Consider two homogenous clusters that are adjacent to each
                     other in the dendrogram: if the difference in distance
                     between the two clusters and their supercluster is smaller
                     than `min_dist_diff` they will be merged. Or in other words:
@@ -82,7 +81,7 @@ def extract_homogeneous_clusters(
 
     # Make linkage
     if linkage is None:
-        Z = fastcluster.linkage(squareform(dists, checks=False), method=link_method)
+        Z = sch.linkage(squareform(dists, checks=False), method=link_method)
     else:
         Z = linkage
 

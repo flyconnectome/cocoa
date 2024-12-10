@@ -14,19 +14,22 @@ from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
 # but more importantly it is much more memory efficient
-from fastcluster import linkage
+try:
+    from fastcluster import linkage
+except ModuleNotFoundError:
+    from scipy.cluster.hierarchy import linkage
 from scipy.cluster.hierarchy import cut_tree, leaves_list, dendrogram
 from scipy.spatial.distance import squareform
 from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection
 
-from .datasets import FlyWire, Hemibrain, MaleCNS
+from .datasets import FlyWire, Hemibrain, MaleCNS, MaleVNC
 from .datasets.core import DataSet
 from .datasets.ds_utils import _add_types
 from .cluster_utils import extract_homogeneous_clusters, is_good
 from .utils import make_iterable, printv
 from .distance import calculate_distance
-from .mappers import GraphMapper, BaseMapper
+from .mappers import GraphMapper, BaseMapper, extract_mappings
 
 
 __all__ = ["Clustering", "generate_clustering"]
