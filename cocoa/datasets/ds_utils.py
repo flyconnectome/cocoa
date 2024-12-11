@@ -70,6 +70,9 @@ FLYWIRE_LIVE_COLUMNS = [
     "status",
 ]
 
+CLIO_MCNS_CLIENT = "CNS"
+CLIO_MANC_CLIENT = "VNC"  # 'VNC' is the production dataset
+
 
 def download_cache_file(url, force_reload="auto", verbose=True):
     """Load file from URL and cache locally.
@@ -289,7 +292,7 @@ def _get_hemibrain_meta(live=False):
 def _get_mcns_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
-        client = _get_clio_client("CNS")
+        client = _get_clio_client(CLIO_MCNS_CLIENT)
         ann = clio.fetch_annotations(None, client=client)
 
         # Some processing to align between the two sources
@@ -322,7 +325,7 @@ def _get_mcns_meta(source):
 def _get_manc_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
-        client = _get_clio_client("MANC")
+        client = _get_clio_client(CLIO_MANC_CLIENT)
         ann = clio.fetch_annotations(None, client=client)
 
         return ann.rename(
