@@ -17,6 +17,7 @@ from .ds_utils import (
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
+    _find_column,
     MCNS_BAD_TYPES,
 )
 from ..utils import collapse_neuron_nodes
@@ -476,7 +477,9 @@ class MaleCNS(JaneliaDataSet):
                 ("type", "hemibrain_type", "flywire_type", "manc_type"),
                 ("malecns", "hemibrain", "flywire", "manc"),
             ):
-                if col not in ann.columns:
+                # Map column to the correct column in the annotation
+                col = _find_column(col, ann)
+                if not col:
                     continue
                 notnull = ann[col].notnull()
                 ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
@@ -493,8 +496,10 @@ class MaleCNS(JaneliaDataSet):
             cols.extend(self.backfill_types)
 
         for col in cols:
+            # Map column to the correct column in the annotation
+            col = _find_column(col, ann)
             # Skip if this column doesn't exist
-            if col not in ann.columns:
+            if not col:
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]

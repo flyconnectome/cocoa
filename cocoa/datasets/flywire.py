@@ -17,6 +17,7 @@ from .ds_utils import (
     _load_static_flywire_annotations,
     _get_fw_sides,
     _is_int,
+    _find_column
 )
 from ..utils import collapse_neuron_nodes
 
@@ -360,7 +361,9 @@ class FlyWire(DataSet):
                 ("cell_type", "hemibrain_type", "malecns_type"),
                 ("flywire", "hemibrain", "malecns"),
             ):
-                if col not in ann.columns:
+                # Map column to the correct column in the annotation
+                col = _find_column(col, ann)
+                if not col:
                     continue
                 notnull = ann[col].notnull()
                 ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
@@ -374,8 +377,10 @@ class FlyWire(DataSet):
         # Order of labels
         cols = ("malecns_type", "cell_type", "hemibrain_type")
         for col in cols:
+            # Map column to the correct column in the annotation
+            col = _find_column(col, ann)
             # Skip if this column doesn't exist
-            if col not in ann.columns:
+            if not col:
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]

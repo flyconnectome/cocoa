@@ -16,6 +16,7 @@ from .ds_utils import (
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
+    _find_column
 )
 from ..utils import collapse_neuron_nodes
 
@@ -334,8 +335,10 @@ class MaleVNC(JaneliaDataSet):
             cols.extend(self.backfill_types)
 
         for col in cols:
+            # Map column to the correct column in the annotation
+            col = _find_column(col, ann)
             # Skip if this column doesn't exist
-            if col not in ann.columns:
+            if not col:
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]

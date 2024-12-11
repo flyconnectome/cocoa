@@ -514,12 +514,9 @@ def _get_manc_types(
 def _backfill_types(meta, backfill_types):
     """Backfill types from other columns."""
     for col in backfill_types:
-        if "_" in col:
-            col_alt = col.split("_")[0] + "".join([w.capitalize() for w in col.split("_")[1:]])
-
-        if col_alt in meta.columns:
-            col = col_alt
-        elif col not in meta.columns:
+        # Map column to the correct column in the annotation
+        col = _find_column(col, meta)
+        if not col:
             continue
 
         # For "group" and "instance" we need to do a bit of clean-up first
@@ -828,3 +825,26 @@ def _parse_neuprint_roi(roi, client):
         rois.extend(collect_primary_rois(found))
 
     return rois
+
+
+def _find_column(col, df):
+    """Check if a column exists in a DataFrame. Accounts for both snake_case and camelCase.
+
+    If column not present, will return `False`.
+    """
+    if col in df.columns:
+        return col
+
+    # Check snake_case
+    if '_' in col:
+        alt = "".join([w.capitalize() if i > 0 else w for i, w in enumerate(col.split("_"))])
+        if alt in df.columns:
+            return alt
+
+    # Check camelCase
+    if any([c.isupper() for c in col]):
+        alt = "".join([f"_{c.lower()}" if c.isupper() else c for c in col])
+        if alt in df.columns:
+            return alt
+
+    return False
