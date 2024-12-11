@@ -779,12 +779,12 @@ class GraphMapper(BaseMapper):
                 for edge in set(sg.edges) - sg_keep_edges:
                     # Translate any groups back into individual body IDs
                     if str(edge[0]).startswith("group"):
-                        source = [int(s) for s in sg.nodes[edge[0]]["ids"].split(",")]
+                        source = [s for s in sg.nodes[edge[0]]["ids"].split(",")]
                     else:
                         source = [edge[0]]
 
                     if str(edge[1]).startswith("group"):
-                        target = [int(s) for s in sg.nodes[edge[1]]["ids"].split(",")]
+                        target = [s for s in sg.nodes[edge[1]]["ids"].split(",")]
                     else:
                         target = [edge[1]]
 
