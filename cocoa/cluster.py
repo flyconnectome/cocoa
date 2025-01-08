@@ -256,7 +256,7 @@ class Clustering:
 
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
-            print("Warning: Looks the clustering contains non-unique IDs!")
+            print("Warning: clustering contains non-unique IDs! Please be mindful of that when working with the results.")
 
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
@@ -432,12 +432,13 @@ class Clustering:
         )
 
         # Calculate fraction of connectivity used for the observation vector
+        # N.B. we're tracking both ID and dataset in case of non-unique IDs
         syn_counts_before = {}
         for ds in self.datasets:
-            syn_counts_before.update(ds.syn_counts)
+            syn_counts_before.update({(i, ds.label): n for i, n in ds.syn_counts.items()})
 
         syn_counts_after = self.vect_.sum(axis=1)
-        self.cn_frac_ = syn_counts_after / syn_counts_after.index.map(syn_counts_before)
+        self.cn_frac_ = syn_counts_after / np.array([syn_counts_before[(i, s)] for i, s in zip(self.vect_.index, self.vect_sources_)])
 
         printv(
             f"Using on average {self.cn_frac_.mean():.1%} of neurons' synapses.",
@@ -525,22 +526,20 @@ class Clustering:
         # Generate table
         table = pd.DataFrame()
         table["id"] = self.dists_.index.values[leafs]
+        table["dataset"] = self.vect_sources_[leafs]
 
         # Add labels
         labels = {}
         for ds in self.datasets:
-            labels.update(dict(zip(ds.neurons, ds.get_labels(ds.neurons))))
-        table["label"] = table.id.map(labels).astype(str)
+            labels.update({(i, ds.label): l for i, l in zip(ds.neurons, ds.get_labels(ds.neurons))})
+        table["label"] = [labels.get((i, s), i) for i, s in zip(table.id, table.dataset)]
+
         # Neurons without an actual type will show up with their own ID as label
         # Here we set these to None
         table.loc[table.label == table.id.astype(str), "label"] = None
 
-        # Add a column for the dataset
-        ds = {i: ds.label for ds in self.datasets for i in ds.neurons}
-        table["dataset"] = table.id.map(ds)
-
         # Add fraction of connectivity used
-        table["cn_frac_used"] = table.id.map(self.cn_frac_.to_dict())
+        table["cn_frac_used"] = self.cn_frac_.values[leafs]
 
         # Order in the dendrogram
         table["dend_ix"] = table.index
