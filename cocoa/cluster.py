@@ -165,15 +165,14 @@ class Clustering:
         results["n_syn"] = results.label.map(n_syn)
         return results
 
-    def get_linkage(self, method="ward", preserve_input=True):
+    def get_linkage(self, method="ward"):
         """Calculate and cache linkage matrix for the clustering."""
         # Check if we can re-use a condensed vector-form distance matrix
         s = getattr(self, "dists_vect_", squareform(self.dists_.values, checks=False))
 
         return linkage(
             s,
-            method=method,
-            preserve_input=preserve_input,  # note: this doesn't do anything if our distances are float32
+            method=method
         )
 
     def compile(
