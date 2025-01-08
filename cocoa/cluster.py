@@ -543,6 +543,9 @@ class Clustering:
         # Order in the dendrogram
         table["dend_ix"] = table.index
 
+        # Order in distances
+        table["dist_ix"] = leafs
+
         # Last but not least: add clusters (if provided)
         if clusters is not None:
             if not isinstance(clusters, (np.ndarray, list)):
