@@ -7,10 +7,10 @@ import networkx as nx
 from collections.abc import Iterable
 
 
-def printv(*args, verbose=True, **kwargs):
+def printv(*args, verbose=True, flush=True, **kwargs):
     """Thin wrapper around print function."""
     if verbose:
-        print(*args, **kwargs)
+        print(*args, flush=flush, **kwargs)
 
 
 def check_frame(x, required_cols=None, dtypes=None):
