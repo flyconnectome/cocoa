@@ -1,10 +1,16 @@
 import networkx as nx
 import tanglegram as tg
 import numpy as np
+import pandas as pd
 import scipy.cluster.hierarchy as sch
+import matplotlib.pyplot as plt
 
 from scipy.spatial.distance import squareform
+from tqdm.auto import tqdm
+from multiprocessing import Pool, shared_memory
+from multiprocessing.managers import SharedMemoryManager
 
+from .distance import calculate_distance
 
 
 __all__ = ["extract_homogeneous_clusters"]
@@ -119,8 +125,9 @@ def extract_homogeneous_clusters(
     cl = np.array([clusters[i] for i in np.arange(len(dists))])
 
     if min_dist_diff:
-        cl = _merge_similar_clusters(cl=cl, G=G, Z=G, dist_thresh=min_dist_diff,
-                                     verbose=verbose)
+        cl = _merge_similar_clusters(
+            cl=cl, G=G, Z=G, dist_thresh=min_dist_diff, verbose=verbose
+        )
 
     return cl
 
@@ -255,7 +262,9 @@ def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
             c2 = cl[[i for i in sg_other if i in ix]][0]
 
             if verbose:
-                print(f"Merging {c1} and {c2} (top={dist_top}; left={dist_c1}, right={dist_c2}")
+                print(
+                    f"Merging {c1} and {c2} (top={dist_top}; left={dist_c1}, right={dist_c2}"
+                )
 
             to_merge.append([c1, c2])
 
@@ -267,3 +276,326 @@ def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
         cl2[cl2 == p[1]] = p[0]
 
     return cl2
+
+
+def bootstrap_prob(
+    data,
+    method="ward",
+    metric="cosine",
+    n_boot=1000,
+    r=(0.5, 1.4, 0.1),
+    seed=None,
+    parallel=False,
+    progress=True,
+):
+    """Calculate the bootstrap probability for each cluster.
+
+    We do this by resampling the data (see `r`), calculating the linkage and then testing
+    for each cluster in the original linkage if it is present in the bootstrapped linkage.
+
+    Parameters
+    ----------
+    data :      (M, N) np.ndarray
+                Observations to cluster on.
+    method :    str
+                Linkage method to use.
+    metric :    "cosine" | "Euclidean"
+                Distance metric to use.
+    n_boot :    int
+                Number of bootstrap iterations.
+    r :         (start, stop, stepsize) tuple
+                Range of multiscale bootstrap samples to use.
+    seed :      int, optional
+                Random seed.
+    parallel :  bool | int
+                Use parallel processing. If `True` will use all available cores.
+                If an integer is given, will use that many cores.
+    progress :  bool
+                Show progress bar.
+
+    Returns
+    -------
+    bp :        np.ndarray
+                Bootstrap probabilities for each cluster in the original linkage.
+
+    """
+    if isinstance(data, pd.DataFrame):
+        data = data.values
+    assert isinstance(data, np.ndarray)
+
+    assert metric in ("cosine", "Euclidean")
+    assert isinstance(r, tuple) and len(r) == 3
+
+    # Calculate the original linkage
+    dists = calculate_distance(data, metric=metric, verbose=False)
+    Z = sch.linkage(squareform(dists), method=method, metric=metric)
+
+    # Generate the graph
+    G = tg.utils.linkage_to_graph(Z)
+
+    # For each hinge, get the original observations in it
+    n_org = data.shape[0]
+    clusters = {}
+    for node, path_lengths in nx.shortest_path_length(G):
+        # Skip if this is an original observation
+        if node < n_org:
+            continue
+        # Get the original observations in this cluster
+        clusters[(node, tuple(sorted([n for n in path_lengths if n < n_org])))] = []
+
+    # Now start the bootstrapping
+    rng = np.random.default_rng(seed)
+
+    if not parallel:
+        for frac in tqdm(
+            np.arange(r[0], r[1], r[2]), disable=not progress, desc="Bootstrapping"
+        ):
+            size = max(int(frac * data.shape[1]), 1)
+            for i in range(n_boot):
+                # Sample the array along the second axis
+                sample = rng.choice(data.T, size=size, replace=size > data.shape[1]).T
+
+                # Run bootstrap
+                results = _bootstrap_prob_worker_single(
+                    sample, metric, method, n_org, list(clusters)
+                )
+
+                # Fill results
+                for k, (node, cluster) in enumerate(clusters.keys()):
+                    clusters[(node, cluster)].append(results[k])
+    else:
+        parallel = None if parallel is True else parallel
+        indices = np.arange(data.shape[1])
+
+        with SharedMemoryManager() as ssm:
+            # Generate shared memory object
+            data_shared = ssm.SharedMemory(data.nbytes)
+
+            # Copy data to shared memory object
+            data_shared_buf = np.ndarray(data.shape, dtype=data.dtype, buffer=data_shared.buf)
+            data_shared_buf[:] = data
+
+            # N.B. we're initialising each worker with the shared memory object
+            # That way, we only have to send it over the wire once
+            with Pool(parallel, initializer=make_data_global, initargs=(data.shape, data.dtype, data_shared.name)) as pool:
+                for frac in tqdm(
+                    np.arange(r[0], r[1], r[2]), disable=not progress, desc="Bootstrapping"
+                ):
+                    size = max(int(frac * data.shape[1]), 1)
+                    results = []
+                    for i in range(n_boot):
+                        # Sample the array along the second axis
+                        sample_ix = rng.choice(
+                            indices, size=size, replace=size > data.shape[1]
+                        ).T
+
+                        # Submit task
+                        results.append(
+                            pool.apply_async(
+                                _bootstrap_prob_worker_parallel,
+                                [],
+                                dict(
+                                    sample_ix=sample_ix,
+                                    metric=metric,
+                                    method=method,
+                                    n_org=n_org,
+                                    clusters=list(clusters),
+                                ),
+                            )
+                        )
+
+                    # Fill results
+                    for i, out in enumerate(results):
+                        out = out.get()
+                        for k, (node, cluster) in enumerate(clusters.keys()):
+                            clusters[(node, cluster)].append(out[k])
+
+    # Calculate the bootstrap probability for each cluster
+    bp = np.zeros(len(Z))
+    for i, (node, cluster) in enumerate(clusters.keys()):
+        bp[node - n_org] = np.mean(clusters[(node, cluster)])
+
+    return bp
+
+
+def _bootstrap_prob_worker_single(sample, metric, method, n_org, clusters):
+    """Worker for bootstrap probability calculation."""
+
+    # Calculate the distance matrix
+    dists = calculate_distance(sample, metric=metric, verbose=False)
+
+    # Calculate the linkage
+    Z_boot = sch.linkage(squareform(dists), method=method, metric=metric)
+
+    # Generate the graph
+    G_boot = tg.utils.linkage_to_graph(Z_boot)
+
+    # Extract clusters
+    clusters_boot = set()
+    for node, path_lengths in nx.shortest_path_length(G_boot):
+        if node < n_org:
+            continue
+        clusters_boot.add(tuple(sorted([n for n in path_lengths if n < n_org])))
+
+    results = np.zeros(len(clusters)).astype(bool)
+
+    # Collect results and check if the original clusters are present in the bootstrapped clusters
+    for k, (node, cluster) in enumerate(clusters):
+        results[k] = cluster in clusters_boot
+
+    return results
+
+
+def _bootstrap_prob_worker_parallel(sample_ix, metric, method, n_org, clusters):
+    """Worker for parallel bootstrap probability calculation."""
+    # `data` is a global variable (see worker initialization)
+    # Here, we are subsetting the data to the indices we were told to sample
+    sample = data[sample_ix].T
+
+    # Calculate the distance matrix
+    dists = calculate_distance(sample, metric=metric, verbose=False)
+
+    # Calculate the linkage
+    Z_boot = sch.linkage(squareform(dists), method=method, metric=metric)
+
+    # Generate the graph
+    G_boot = tg.utils.linkage_to_graph(Z_boot)
+
+    # Extract clusters
+    clusters_boot = set()
+    for node, path_lengths in nx.shortest_path_length(G_boot):
+        if node < n_org:
+            continue
+        clusters_boot.add(tuple(sorted([n for n in path_lengths if n < n_org])))
+
+    results = np.zeros(len(clusters)).astype(bool)
+
+    # Collect results and check if the original clusters are present in the bootstrapped clusters
+    for k, (node, cluster) in enumerate(clusters):
+        results[k] = cluster in clusters_boot
+
+    return results
+
+
+def make_data_global(shape, dtype, buf_name):
+    # N.B. we need to make both the data and the shared memory object global
+    global data, shm
+    shm = shared_memory.SharedMemory(name=buf_name)
+    data = np.ndarray(shape, dtype=dtype, buffer=shm.buf).T
+
+
+def add_hinge_labels(R, Z, labels, ax=None, **text_kwargs):
+    """Add labels to the dendrogram
+
+    Parameters
+    ----------
+    R :         dict
+                Output of scipy's dendrogram: a dictionary of data structures
+                computed to render the dendrogram.
+    Z :         np.ndarray
+                Linkage matrix.
+    labels :    iterable
+                Labels to add to the dendrogram. This must be in order of the
+                original linkage.
+    ax :        matplotlib.axes.Axes, optional
+                Axes to add the labels to. If not provided will get the current
+                axes.
+    **text_kwargs
+                Additional keyword arguments to pass to `ax.text`.
+
+    """
+    assert isinstance(R, dict)
+    assert len(R["dcoord"]) == len(labels)
+
+    if ax is None:
+        ax = plt.gca()
+
+    assert isinstance(ax, plt.Axes)
+
+    # The dendrogram will contain the coordinates for each element as "icoord" and "dcoord"
+    # However, the order of the elements in the dendrogram is not the same as the order of the
+    # linkage (and hence the labels). Hence, we have to map the coordinates in the dendrogram
+    # back to the index into the original linkage.
+    index2coord = map_linkage_to_dendrogram(R, Z)
+
+    default_args = dict(
+        verticalalignment="bottom",
+        horizontalalignment="center",
+        clip_on=True,
+        size=6,
+    )
+    default_args.update(text_kwargs)
+
+    # Add the labels
+    for i, label in enumerate(labels):
+        x, y = index2coord[i]
+        ax.text(x, y, label, **default_args)
+
+
+def map_linkage_to_dendrogram(R, Z):
+    """Map linkage to coordinates dendrogram.
+
+    Parameters
+    ----------
+    R :     dict
+            Output of scipy's dendrogram: a dictionary of data structures
+            computed to render the dendrogram.
+    Z :     np.ndarray
+            Linkage matrix.
+
+    Returns
+    -------
+    coords :   np.array
+               Mapping from the index in the linkage to the (x, y) coordinates
+               in the dendrogram.
+
+    """
+    G = nx.DiGraph()
+    edges = []
+    for i, (ico, dco) in enumerate(zip(R["icoord"], R["dcoord"])):
+        # Each of these elements connects two sources and one target
+        # In the first instance, we will use the coordinates to track nodes
+        s1 = (float(ico[0]), float(dco[0]))
+        s2 = (float(ico[2]), float(dco[-1]))
+        t = (float(ico[0] + (ico[-1] - ico[0]) / 2), float(dco[1]))
+        edges += [(t, s1), (t, s2)]
+    G.add_edges_from(edges)
+    # root_dend = [n for n, d in G.in_degree() if d == 0][0]
+
+    # Add coordinates as node attributes
+    nx.set_node_attributes(G, {n: {"pos": n} for n in G.nodes})
+
+    # Next, we will label the nodes according to where they show up in the linkage
+    # (i.e. the index of the node in the linkage)
+    index2coord = {}
+
+    # First, we will need to find the leaves as anchor points
+    for i, leaf in enumerate(R["leaves"]):
+        index2coord[leaf] = (5 + i * 10, 0)
+
+    # Now we can simply use the linkage to find the rest
+    G_link = tg.utils.linkage_to_graph(Z)
+    # root_link = max(G_link.nodes)
+
+    # Go over the leaf nodes
+    for node in list(index2coord):
+        while True:
+            try:
+                parent_link = next(G_link.predecessors(node))
+                parent_dend = next(G.predecessors(index2coord[node]))
+
+                # We can stop if we already mapped this node
+                if parent_link in index2coord:
+                    break
+
+                index2coord[parent_link] = parent_dend
+
+                node = parent_link
+            except StopIteration:
+                break
+
+    # At this point index2coord contains leaf positions - let's drop them and
+    # convert to numpy array
+    coords = np.array([index2coord[i + (len(Z) + 1)] for i in range(len(Z))])
+
+    return coords
