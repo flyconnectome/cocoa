@@ -5,10 +5,11 @@ import pandas as pd
 import scipy.cluster.hierarchy as sch
 import matplotlib.pyplot as plt
 
-from scipy.spatial.distance import squareform
+from scipy.spatial.distance import squareform, cdist
 from tqdm.auto import tqdm
 from multiprocessing import Pool, shared_memory
 from multiprocessing.managers import SharedMemoryManager
+from scipy.sparse import coo_array
 
 from .distance import calculate_distance
 
@@ -284,6 +285,7 @@ def bootstrap_prob(
     metric="cosine",
     n_boot=1000,
     r=(0.5, 1.4, 0.1),
+    leaf_prob=False,
     seed=None,
     parallel=False,
     progress=True,
@@ -316,7 +318,16 @@ def bootstrap_prob(
     Returns
     -------
     bp :        np.ndarray
-                Bootstrap probabilities for each cluster in the original linkage.
+                For each cluster in the full linkage, the fraction of boostrapped samples in which
+                the exact same cluster is present.
+    bp_fuzz :   np.ndarray
+                For each cluster in the full linkage, the average fraction of neurons in that cluster
+                that end up in the closest matching boostrapped cluster. This metric is more forgiving
+                than `bp`.
+    bp_leafs :  np.ndarray, optional
+                Only if `leaf_prob` is True: For each leaf in the full linkage, the average fraction of
+                times this leafs ended up in the "correct" cluster (according to `bp_fuzz`) during the
+                bootstrapping.
 
     """
     if isinstance(data, pd.DataFrame):
@@ -333,20 +344,19 @@ def bootstrap_prob(
     # Generate the graph
     G = tg.utils.linkage_to_graph(Z)
 
-    # For each hinge, get the original observations in it
-    n_org = data.shape[0]
-    clusters = {}
-    for node, path_lengths in nx.shortest_path_length(G):
-        # Skip if this is an original observation
-        if node < n_org:
-            continue
-        # Get the original observations in this cluster
-        clusters[(node, tuple(sorted([n for n in path_lengths if n < n_org])))] = []
+    # Construct a sparse boolean matrix where each row is a cluster and each column is an original observation
+    # We will need dense matrices for the pairwise distance calculations but sparse matrices will make it
+    # cheaper to send the data to the workers
+    cluster_mat = _cluster_matrix(G, data.shape[0], sparse=True)
 
     # Now start the bootstrapping
     rng = np.random.default_rng(seed)
 
+    # Bootstrap
+    results = []
+    results_leafs = []
     if not parallel:
+        cluster_mat = cluster_mat.todense()
         for frac in tqdm(
             np.arange(r[0], r[1], r[2]), disable=not progress, desc="Bootstrapping"
         ):
@@ -355,34 +365,64 @@ def bootstrap_prob(
                 # Sample the array along the second axis
                 sample = rng.choice(data.T, size=size, replace=size > data.shape[1]).T
 
-                # Run bootstrap
-                results = _bootstrap_prob_worker_single(
-                    sample, metric, method, n_org, list(clusters)
+                # Calculate the distance matrix
+                dists_boot = calculate_distance(sample, metric=metric, verbose=False)
+
+                # Calculate the linkage
+                Z_boot = sch.linkage(
+                    squareform(dists_boot), method=method, metric=metric
                 )
 
-                # Fill results
-                for k, (node, cluster) in enumerate(clusters.keys()):
-                    clusters[(node, cluster)].append(results[k])
+                # Generate the graph
+                G_boot = tg.utils.linkage_to_graph(Z_boot)
+
+                # Construct cluster x leaf matrix
+                cluster_mat_boot = _cluster_matrix(G_boot, data.shape[0], sparse=False)
+
+                # Calculate distance between original and bootstrapped cluster dist
+                mat_dist = cdist(cluster_mat, cluster_mat_boot, metric="euclidean")
+
+                # The minimum distance tells us how many clusters have an exact match:
+                # if the distance is zero, there is an identical clusters are identical
+                # if the distance is non-zero, there is no identical cluster
+                mat_dist_min = mat_dist.min(axis=1)
+
+                # If asked for, also calculate the probability of a leaf being in the same clusters
+                if leaf_prob:
+                    mat_dist_arg_min = np.argmin(mat_dist, axis=1)
+                    best_cluster_match = cluster_mat_boot[mat_dist_arg_min]
+                    bf_leafs = (cluster_mat & best_cluster_match).sum(axis=0)
+                    results_leafs.append(bf_leafs)
+
+                results.append(mat_dist_min)
     else:
+
         parallel = None if parallel is True else parallel
         indices = np.arange(data.shape[1])
-
         with SharedMemoryManager() as ssm:
             # Generate shared memory object
             data_shared = ssm.SharedMemory(data.nbytes)
 
             # Copy data to shared memory object
-            data_shared_buf = np.ndarray(data.shape, dtype=data.dtype, buffer=data_shared.buf)
+            data_shared_buf = np.ndarray(
+                data.shape, dtype=data.dtype, buffer=data_shared.buf
+            )
             data_shared_buf[:] = data
 
             # N.B. we're initialising each worker with the shared memory object
             # That way, we only have to send it over the wire once
-            with Pool(parallel, initializer=make_data_global, initargs=(data.shape, data.dtype, data_shared.name)) as pool:
+            with Pool(
+                parallel,
+                initializer=_make_data_global,
+                initargs=(data.shape, data.dtype, data_shared.name),
+            ) as pool:
                 for frac in tqdm(
-                    np.arange(r[0], r[1], r[2]), disable=not progress, desc="Bootstrapping"
+                    np.arange(r[0], r[1], r[2]),
+                    disable=not progress,
+                    desc="Bootstrapping",
                 ):
                     size = max(int(frac * data.shape[1]), 1)
-                    results = []
+                    jobs = []
                     for i in range(n_boot):
                         # Sample the array along the second axis
                         sample_ix = rng.choice(
@@ -390,7 +430,7 @@ def bootstrap_prob(
                         ).T
 
                         # Submit task
-                        results.append(
+                        jobs.append(
                             pool.apply_async(
                                 _bootstrap_prob_worker_parallel,
                                 [],
@@ -398,86 +438,114 @@ def bootstrap_prob(
                                     sample_ix=sample_ix,
                                     metric=metric,
                                     method=method,
-                                    n_org=n_org,
-                                    clusters=list(clusters),
+                                    cluster_mat=cluster_mat,
+                                    leaf_prob=leaf_prob,
                                 ),
                             )
                         )
 
                     # Fill results
-                    for i, out in enumerate(results):
-                        out = out.get()
-                        for k, (node, cluster) in enumerate(clusters.keys()):
-                            clusters[(node, cluster)].append(out[k])
+                    for i, res in enumerate(jobs):
+                        if not leaf_prob:
+                            results.append(res.get())
+                        else:
+                            r, bf_leafs = res.get()
+                            results.append(r)
+                            results_leafs.append(bf_leafs)
 
-    # Calculate the bootstrap probability for each cluster
-    bp = np.zeros(len(Z))
-    for i, (node, cluster) in enumerate(clusters.keys()):
-        bp[node - n_org] = np.mean(clusters[(node, cluster)])
+    # Calculate the bootstrap probability
+    bp = (np.array(results) == 0).mean(axis=0)
+    # Calculate and normalize the bootstrap distance
+    bp_fuzz = (cluster_mat.sum(axis=1) - np.mean(results, axis=0)) / cluster_mat.sum(axis=1)
 
-    return bp
+    # If we didn't calculate the leaf probabilities, we can stop here
+    if not leaf_prob:
+        return bp, bp_fuzz
 
-
-def _bootstrap_prob_worker_single(sample, metric, method, n_org, clusters):
-    """Worker for bootstrap probability calculation."""
-
-    # Calculate the distance matrix
-    dists = calculate_distance(sample, metric=metric, verbose=False)
-
-    # Calculate the linkage
-    Z_boot = sch.linkage(squareform(dists), method=method, metric=metric)
-
-    # Generate the graph
-    G_boot = tg.utils.linkage_to_graph(Z_boot)
-
-    # Extract clusters
-    clusters_boot = set()
-    for node, path_lengths in nx.shortest_path_length(G_boot):
-        if node < n_org:
-            continue
-        clusters_boot.add(tuple(sorted([n for n in path_lengths if n < n_org])))
-
-    results = np.zeros(len(clusters)).astype(bool)
-
-    # Collect results and check if the original clusters are present in the bootstrapped clusters
-    for k, (node, cluster) in enumerate(clusters):
-        results[k] = cluster in clusters_boot
-
-    return results
+    # Calculate and normalize the leaf probabilities
+    bp_leafs = np.mean(results_leafs, axis=0) / cluster_mat.sum(axis=0)
+    return bp, bp_fuzz, bp_leafs
 
 
-def _bootstrap_prob_worker_parallel(sample_ix, metric, method, n_org, clusters):
+def _bootstrap_prob_worker_parallel(sample_ix, metric, method, cluster_mat, leaf_prob):
     """Worker for parallel bootstrap probability calculation."""
     # `data` is a global variable (see worker initialization)
     # Here, we are subsetting the data to the indices we were told to sample
     sample = data[sample_ix].T
 
     # Calculate the distance matrix
-    dists = calculate_distance(sample, metric=metric, verbose=False)
+    dists_boot = calculate_distance(sample, metric=metric, verbose=False)
 
     # Calculate the linkage
-    Z_boot = sch.linkage(squareform(dists), method=method, metric=metric)
+    Z_boot = sch.linkage(squareform(dists_boot), method=method, metric=metric)
 
     # Generate the graph
     G_boot = tg.utils.linkage_to_graph(Z_boot)
 
-    # Extract clusters
-    clusters_boot = set()
-    for node, path_lengths in nx.shortest_path_length(G_boot):
+    # Construct cluster x leaf matrix
+    cluster_mat_boot = _cluster_matrix(G_boot, data.shape[1], sparse=False)
+
+    # Calculate distance between original and bootstrapped cluster dist
+    cluster_mat = cluster_mat.todense()
+    mat_dist = cdist(cluster_mat, cluster_mat_boot, metric="euclidean")
+
+    # The minimum distance tells us how many clusters have an exact match:
+    # if the distance is zero, there is an identical clusters are identical
+    # if the distance is non-zero, there is no identical cluster
+    mat_dist_min = mat_dist.min(axis=1)
+
+    if not leaf_prob:
+        return mat_dist_min
+
+    # If asked for, also calculate the probability of a leaf being in the same clusters
+    mat_dist_arg_min = np.argmin(mat_dist, axis=1)
+    best_cluster_match = cluster_mat_boot[mat_dist_arg_min]
+    bf_leafs = (cluster_mat & best_cluster_match).sum(axis=0)
+
+    return mat_dist_min, bf_leafs
+
+
+def _cluster_matrix(G, n_org, sparse=True):
+    """Generate a cluster x leaf matrix.
+
+    Parameters
+    ----------
+    G :         nx.DiGraph
+                Graph representing the linkage.
+    n_org :     int
+                Number of original observations.
+    sparse :    bool
+                Whether to return a sparse or dense matrix.
+
+    Returns
+    -------
+    cluster_mat :   np.ndarray | scipy.sparse.coo_matrix
+                    Matrix where each row is a cluster and each column is an original observation.
+
+    """
+    # Construct a sparse boolean matrix where each row is a cluster
+    # and each column is an original observation
+    rows = []
+    cols = []
+    vals = []
+    for node, path_lengths in nx.shortest_path_length(G):
+        # Skip if this is an original observation
         if node < n_org:
             continue
-        clusters_boot.add(tuple(sorted([n for n in path_lengths if n < n_org])))
+        # Track
+        org_obs = [n for n in path_lengths if n < n_org]
+        rows.extend([node - n_org] * len(org_obs))
+        cols.extend(org_obs)
+        vals.extend([True] * len(org_obs))
+    cluster_mat = coo_array((vals, (rows, cols)), shape=(len(G) - n_org, n_org))
 
-    results = np.zeros(len(clusters)).astype(bool)
+    if not sparse:
+        cluster_mat = cluster_mat.todense()
 
-    # Collect results and check if the original clusters are present in the bootstrapped clusters
-    for k, (node, cluster) in enumerate(clusters):
-        results[k] = cluster in clusters_boot
-
-    return results
+    return cluster_mat
 
 
-def make_data_global(shape, dtype, buf_name):
+def _make_data_global(shape, dtype, buf_name):
     # N.B. we need to make both the data and the shared memory object global
     global data, shm
     shm = shared_memory.SharedMemory(name=buf_name)
@@ -495,7 +563,7 @@ def add_hinge_labels(R, Z, labels, ax=None, **text_kwargs):
     Z :         np.ndarray
                 Linkage matrix.
     labels :    iterable
-                Labels to add to the dendrogram. This must be in order of the
+                Labels to add to the dendrogram. Must be in order of the
                 original linkage.
     ax :        matplotlib.axes.Axes, optional
                 Axes to add the labels to. If not provided will get the current
