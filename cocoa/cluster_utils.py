@@ -123,6 +123,12 @@ def extract_homogeneous_clusters(
     reind = {c: i for i, c in enumerate(np.unique(list(clusters.values())))}
     clusters = {k: reind[v] for k, v in clusters.items()}
 
+    # At this point singletons might not be assigned a cluster - we need
+    # to account for that and give them a unique cluster
+    for i in np.arange((len(dists))):
+        if i not in clusters:
+            clusters[i] = len(set(clusters.values()))
+
     cl = np.array([clusters[i] for i in np.arange(len(dists))])
 
     if min_dist_diff:
