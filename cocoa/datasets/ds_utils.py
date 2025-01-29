@@ -61,6 +61,7 @@ FLYWIRE_LIVE_COLUMNS = [
     "supervoxel_id",
     "super_class",
     "cell_class",
+    "supertype",
     "cell_type",
     "hemibrain_type",
     "malecns_type",
