@@ -359,6 +359,13 @@ class MaleVNC(JaneliaDataSet):
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):
+                # We have to avoid splitting e.g. "DVMn 3a, b" into "DVMn 3a" and "b"
+                # If any of the split labels is just a single letter, we'll skip it
+                if any(
+                    len(s.strip()) == 1 for s in c.split(",")
+                ):
+                    continue
+
                 for c2 in c.split(","):
                     G.add_edge(c.strip(), c2.strip(), weight=count)
                     nx.set_edge_attributes(G, {(c.strip(), c2.strip()): {col: True}})
