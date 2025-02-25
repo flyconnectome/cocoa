@@ -700,7 +700,7 @@ class GraphMapper(BaseMapper):
                 if G.nodes[source].get("dataset", None) == ds.label:
                     continue
 
-                # Keep only paths to labels in the other dataset
+                # Keep only paths to labels that also connect to this other dataset
                 this_targets = {
                     t: d for t, d in targets.items() if G.nodes[t].get(ds.label, False)
                 }
@@ -813,13 +813,21 @@ class GraphMapper(BaseMapper):
         }
         # Iterate over all connected components
         for ccn in nx.connected_components(G_trimmed):
+            # Immediately skip isolated nodes (e.g. unlabeled neurons but also labels with no cross-match)
+            if len(ccn) == 1:
+                continue
+
             # Now we have to make sure this connected component is actually connected to all datasets
+            # It is possible that we had a group with a mix of compound and single labels from which one
+            # subcomponent was extracted (via the shortest path) which then left the other label dangling.
             skip = False
+            ccn_neurons = ccn & neurons
             for ds in datasets:
-                if not any(G_trimmed.nodes[n].get(ds.label, False) for n in ccn):
+                if not any(G_trimmed.nodes[n].get(ds.label, False) for n in ccn_neurons):
                     skip = True
                     break
             if skip:
+                printv(f"  Skipping connected component due to missing datasets:\n    {ccn}", verbose=self.verbose)
                 continue
 
             # Generate a new label for this connected component
