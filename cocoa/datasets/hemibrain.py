@@ -12,6 +12,7 @@ from .ds_utils import (
     _get_hemibrain_types,
     _get_hb_sides,
     _add_types,
+    _parse_neuprint_roi
 )
 from ..utils import collapse_neuron_nodes
 
@@ -68,6 +69,7 @@ class Hemibrain(JaneliaDataSet):
         exclude_queries=False,
         live_annot=False,
         cn_object=None,
+        rois=None,
     ):
         assert use_sides in (True, False, "relative")
         super().__init__(label=label)
@@ -78,6 +80,17 @@ class Hemibrain(JaneliaDataSet):
         self.exclude_queries = exclude_queries
         self.live_annot = live_annot
         self.cn_object = cn_object
+        self.rois = rois
+
+    @property
+    def rois(self):
+        return getattr(self, "_rois", None)
+
+    @rois.setter
+    def rois(self, value):
+        if value is not None:
+            value = _parse_neuprint_roi(value, client=self.neuprint_client)
+        self._rois = value
 
     def _add_neurons(self, x, exact=False, sides=("left", "right")):
         """Turn `x` into hemibrain body IDs."""
