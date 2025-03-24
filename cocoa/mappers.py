@@ -157,11 +157,29 @@ class BaseMapper:
         if getattr(self, "verbose", False):
             print(*args, **kwargs)
 
-    def get_mappings(self):
-        """Get mappings. Compile if necessary."""
+    def get_mappings(self, strip_prefix=False):
+        """Get mappings. Compile if necessary.
+
+        Parameters
+        ----------
+        strip_prefix : bool
+                       By default, mappings are keyed as {"dataset:id": label}.
+                       If True, will strip the dataset prefix from the IDs and
+                       convert the IDs to integers.
+
+        Returns
+        -------
+        mappings : dict
+                   Dictionary with mappings between IDs and labels.
+
+        """
         if not hasattr(self, "mappings_") or self._stale:
             self.compile()
-        return self.mappings_
+
+        if not strip_prefix:
+            return self.mappings_
+        else:
+            return {int(k.split(":")[1]): v for k, v in self.mappings_.items()}
 
     def get_dataset_mappings(self, dataset):
         """Get mappings for the given dataset.
@@ -177,7 +195,11 @@ class BaseMapper:
             raise ValueError("`dataset` must be a dataset type or label.")
 
         mappings = self.get_mappings()
-        return {k.split(":")[1]: v for k, v in mappings.items() if k.startswith(f"{dataset}:")}
+        return {
+            k.split(":")[1]: v
+            for k, v in mappings.items()
+            if k.startswith(f"{dataset}:")
+        }
 
     def get_label_counts(self, split_sides=False, label_suspicious=True):
         """Get label counts per dataset.
