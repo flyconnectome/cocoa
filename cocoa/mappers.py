@@ -65,6 +65,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from numbers import Number
 from abc import abstractmethod
 from joblib import Parallel, delayed
 
@@ -294,6 +295,56 @@ class BaseMapper:
 
         return counts
 
+    def get_subgraph(self, nodes):
+        """Compiles a subgraph around the given nodes.
+
+        This can be useful for inspecting the graph around a specific label.
+
+        Parameters
+        ----------
+        nodes : list
+                List of nodes to include in the subgraph.
+
+        Returns
+        -------
+        G : nx.Graph
+            Subgraph including the given nodes and anything directly or indirectly
+            connected to them.
+
+        """
+        if not hasattr(self, "graph_"):
+            raise ValueError("Must compile first.")
+
+        if isinstance(nodes, (str, Number)):
+            nodes = [nodes]
+
+        miss = [n for n in nodes if n not in self.graph_]
+        if any(miss):
+            raise ValueError(f"Nodes {miss} not found in the graph.")
+
+        # Collect all connected components that contain the given nodes
+        nbunch = []
+        for ccn in nx.connected_components(self.graph_):
+            if any(n in ccn for n in nodes):
+                nbunch.extend(ccn)
+
+        # Generate subgraph
+        G = self.graph_.subgraph(nbunch).copy()
+
+        # To facilitate inspection, we will add source labels to the edges
+        edge_sources = {}
+        for e in G.edges(data=True):
+            edge_sources[(e[0], e[1])] = []
+            for k, v in e[2].items():
+                if "type" in k.lower() and v is True:
+                    edge_sources[(e[0], e[1])].append(k)
+
+        nx.set_edge_attributes(
+            G, {k: ",".join(v) for k, v in edge_sources.items()}, name="edge_sources"
+        )
+
+        return G
+
     def validate_dataset(self, ds):
         """Validate dataset(s)."""
         if isinstance(ds, (list, tuple)):
@@ -399,7 +450,9 @@ class SimpleMapper(BaseMapper):
             # to the "primary" labels in the label graph.
             # N.B. that we are prefixing the IDs with the dataset type to avoid
             # any potential conflicts where the same ID across multiple datasets.
-            mappings.update({f"{ds.type}:{n}": label for n, label in ds.get_labels(None).items()})
+            mappings.update(
+                {f"{ds.type}:{n}": label for n, label in ds.get_labels(None).items()}
+            )
 
         # Depending on the combination of datasets, we may have to collapse some of the labels.
         # For example, if FlyWire contains a `PS008,PS009` label, we will have to collapse
@@ -845,11 +898,16 @@ class GraphMapper(BaseMapper):
             skip = False
             ccn_neurons = ccn & neurons
             for ds in datasets:
-                if not any(G_trimmed.nodes[n].get(ds.label, False) for n in ccn_neurons):
+                if not any(
+                    G_trimmed.nodes[n].get(ds.label, False) for n in ccn_neurons
+                ):
                     skip = True
                     break
             if skip:
-                printv(f"  Skipping connected component due to missing datasets:\n    {ccn}", verbose=self.verbose)
+                printv(
+                    f"  Skipping connected component due to missing datasets:\n    {ccn}",
+                    verbose=self.verbose,
+                )
                 continue
 
             # Generate a new label for this connected component
@@ -1173,7 +1231,9 @@ def extract_mappings(mappings, dataset):
     elif isinstance(dataset, DataSet):
         dataset = dataset.type
     elif not isinstance(dataset, str):
-        raise ValueError(f"`dataset` must be a Dataset or a string, got {type(dataset)}")
+        raise ValueError(
+            f"`dataset` must be a Dataset or a string, got {type(dataset)}"
+        )
 
     # First, check if the mappings are actually in the "{dataset}:{id}" format
     all_str = all(isinstance(k, str) for k in mappings)
@@ -1183,6 +1243,10 @@ def extract_mappings(mappings, dataset):
         raise ValueError("Mixed keys in mappings.")
 
     if all_str:
-        return {int(k.split(":")[1]): v for k, v in mappings.items() if k.startswith(dataset)}
+        return {
+            int(k.split(":")[1]): v
+            for k, v in mappings.items()
+            if k.startswith(dataset)
+        }
     else:
         return mappings
