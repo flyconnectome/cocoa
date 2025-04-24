@@ -434,10 +434,18 @@ class Clustering:
         # N.B. we're tracking both ID and dataset in case of non-unique IDs
         syn_counts_before = {}
         for ds in self.datasets:
-            syn_counts_before.update({(i, ds.label): n for i, n in ds.syn_counts.items()})
+            syn_counts_before.update(
+                {(i, ds.label): n for i, n in ds.syn_counts.items()}
+            )
+        self.syn_counts_ = syn_counts_before  # track synapse counts
 
         syn_counts_after = self.vect_.sum(axis=1)
-        self.cn_frac_ = syn_counts_after / np.array([syn_counts_before[(i, s)] for i, s in zip(self.vect_.index, self.vect_sources_)])
+        self.cn_frac_ = syn_counts_after / np.array(
+            [
+                syn_counts_before[(i, s)]
+                for i, s in zip(self.vect_.index, self.vect_sources_)
+            ]
+        )
 
         printv(
             f"Using on average {self.cn_frac_.mean():.1%} of neurons' synapses.",
