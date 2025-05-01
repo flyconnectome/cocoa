@@ -71,8 +71,9 @@ FLYWIRE_LIVE_COLUMNS = [
     "status",
     "dimorphism",
     "top_nt",
-    "top_nt_conf"
-
+    "top_nt_conf",
+    "matching_notes",
+    "synonyms",
 ]
 
 CLIO_MCNS_CLIENT = "CNS"
