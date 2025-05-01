@@ -69,7 +69,10 @@ FLYWIRE_LIVE_COLUMNS = [
     "side",
     "nerve",
     "status",
-    "dimorphism"
+    "dimorphism",
+    "top_nt",
+    "top_nt_conf"
+
 ]
 
 CLIO_MCNS_CLIENT = "CNS"
