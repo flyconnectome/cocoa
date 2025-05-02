@@ -914,7 +914,7 @@ class GraphMapper(BaseMapper):
             ccn_labels = ccn & labels
             # Make sure we first split compound labels
             new_label = ",".join(
-                set([l for label in ccn_labels for l in label.split(",")])
+                sorted(set([l for label in ccn_labels for l in label.split(",")]))
             )
 
             # Assign the new label to the neurons in this connected component
