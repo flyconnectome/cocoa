@@ -493,12 +493,12 @@ class GraphMapper(BaseMapper):
     *datasets
                     List of datasets to map between. Alternatively, use the
                     `.add_dataset()` method to add datasets.
-    post_process :  bool
-                    If True, will attempt to remove edges from the graph that are
-                    not necessary for maintaining the mapping between datasets.
-                    This seems to be reasonably good at removing "accidental" edges
-                    (from spurious annotations) but it may also produce mappings
-                    that are imbalanced.
+    allow_indirect :  bool
+                    If True, will allow mappings that go through other neurons. For example:
+
+                      `MaleCNS:12345` -> `mcns_group_12345` -> `MaleCNS:54321` -> `AOTU001` -> `FlyWire:727891231`
+                       (MCNS neuron)          (label)           (MCNS neuron)      (label)       (FlyWire neuron)
+
     strict :        bool
                     If False (default), will try to establish a mapping greedily
                     by looking for matching labels. If True, will only match labels
@@ -515,13 +515,13 @@ class GraphMapper(BaseMapper):
     # TODOs:
     # - use direct mappings where available (e.g. the "hb123456" hemibrain types in FlyWire)
 
-    def __init__(self, *datasets, post_process=True, strict=False, verbose=True):
-        self.post_process = post_process
+    def __init__(self, *datasets, allow_indirect=False, strict=False, verbose=True):
         self.strict = strict
         self._synonyms = {}
         self._graph_processors = []
         self._bad_labels = []
         self._good_labels = []
+        self.allow_indirect = allow_indirect
         super().__init__(*datasets, verbose=verbose)
 
     @mark_stale
@@ -604,7 +604,7 @@ class GraphMapper(BaseMapper):
         # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
         # Build a hashable identifier for this mapper instance
-        self_identifier = (ds_identifier, self.post_process, self.strict)
+        self_identifier = (ds_identifier, self.allow_indirect, self.strict)
         ds_string = ", ".join([d.type for d in datasets])
         if self_identifier in self._CACHE and not force_rebuild:
             self.report(
@@ -750,134 +750,77 @@ class GraphMapper(BaseMapper):
                 weights[n] = weights.get(n, 0) + w
         nx.set_edge_attributes(G, weights, "weight")
 
-        # Get all shortest path (this is faster than getting them one by one)
-        paths = nx.shortest_path(G)
+        # Collapse neurons into groups - this should speed things up quite a lot
+        G_grp = collapse_neuron_nodes(G).to_undirected()
 
-        # Note: DO NOT remove the `neurons = ...` here (or overwrite it elsewhere)
-        # because we need it again later
-        neurons = set([n for n in G.nodes if G.nodes[n].get("type", None) == "neuron"])
-        keep = set()
-        keep_edges = {}
-        # Go over all neurons and try to get to a label also present in the other dataset
-        for source in neurons:
-            keep.add(source)  # Always keep the source
-            targets = paths[source]  # Get all shortest paths from this source
+        keep_edges = set()
+        ds_labels = [d.label for d in datasets]
+        for ccn in nx.connected_components(G_grp):
+            # Get the subgraph for this connected component
+            sg = G_grp.subgraph(ccn)
 
-            # Skip if there are no targets
-            if (
-                len(targets) == 1
-            ):  # the source will always hit itself, so len == 1 means no other targets
+            # Check if this component actually contains neurons from all datasets
+            sg_datasets = set(nx.get_node_attributes(sg, "dataset").values())
+            if any(label not in sg_datasets for label in ds_labels):
                 continue
 
-            # Iterate over all datasets and get the shortest path to a label that is present in the other dataset
-            for ds in datasets:
-                # Skip if this is the source's dataset
-                if G.nodes[source].get("dataset", None) == ds.label:
+            # Remove "dangling" labels that aren't actually necessary for connecting neurons
+            # from different datasets.
+            sg_keep_nodes = set()
+            neuron_nodes = [
+                n for n in sg.nodes if sg.nodes[n].get("type", None) == "neuron"
+            ]
+            for s, paths in nx.all_pairs_all_shortest_paths(sg):
+                # Skip if the source is not a neuron
+                if s not in neuron_nodes:
                     continue
 
-                # Keep only paths to labels that also connect to this other dataset
-                this_targets = {
-                    t: d for t, d in targets.items() if G.nodes[t].get(ds.label, False)
-                }
+                # Find paths to neurons in other datasets
+                s_ds = sg.nodes[s].get("dataset", None)
+                for t in neuron_nodes:
+                    # This avoids keeping labels that just connect two sets of neurons from the same dataset
+                    if s_ds == sg.nodes[t].get("dataset", None):
+                        continue
+                    # We only allow paths that go from neuron to neuron via labels, not via other neurons
+                    if not self.allow_indirect:
+                        if any(n in neuron_nodes for p in paths[t] for n in p[1:-1]):
+                            continue
+                    sg_keep_nodes.update([i for p in paths[t] for i in p])
 
-                # Skip if there are no targets
-                if not any(this_targets):
+            if len(sg_keep_nodes) != len(sg.nodes):
+                sg = sg.subgraph(sg_keep_nodes)
+
+                # Check again if this component actually contains neurons from all datasets
+                sg_datasets = set(nx.get_node_attributes(sg, "dataset").values())
+                if any(label not in sg_datasets for label in ds_labels):
                     continue
 
-                # Calculate weights for each source->label path
-                # We basically want to pick the paths between datasets that give us the highest granularity
-                # possible. For that, we will punish paths that go through less granular labels.
-                # Note to self: should this be the MAX or the SUM along the path?
-                weights = {
-                    t: max([G.in_degree[p] for p in d[1:]])
-                    for t, d in this_targets.items()
-                }
+            # Get the number of labels in this connected component (after clean-up)
+            labels = {
+                n for n in sg.nodes if G_grp.nodes[n].get("type", None) != "neuron"
+            }
 
-                # Get the label with the lowest weight
-                target = sorted(weights, key=weights.get)[0]
-
-                # Add all nodes in the path to the keep set
-                keep.update(this_targets[target])
-
-                # Track edge weights as number of neurons that point to a label
-                for s, t in zip(this_targets[target], this_targets[target][1:]):
-                    keep_edges[(s, t)] = keep_edges.get((s, t), 0) + 1
-
-        # For debugging: `all_prim - keep` are the labels that are not present in another dataset
-        # print(all_prim - keep)
-
-        # Now subset the graph to only include the shortest paths between neurons
-        G_trimmed = G.subgraph(
-            keep
-        ).to_undirected()  # note: do NOT remove the to_undirected here
-        nx.set_edge_attributes(G_trimmed, keep_edges, "weight")
-
-        # At this point we may still have edges in the graph that we don't actually need
-        # This can happen when e.g. the malecns_type has a fine-grained setting but the
-        # hemibrain_type is still a huge compound type. What we can try is this:
-        # - iterate over all connnected components
-        # - check all the edges in the cc for whether we can remove them without
-        #   one of the new connected components losing a connection to a dataset
-        self.spurious_edges_ = []
-        if self.post_process:
-            # Collapse neurons into groups - this should speed things up quite a lot
-            G_trimmed_grp = collapse_neuron_nodes(G_trimmed).to_undirected()
-
-            for ccn in nx.connected_components(G_trimmed_grp):
-                # Get the subgraph for this connected component
-                sg = G_trimmed_grp.subgraph(ccn)
-
-                # If the connected component contains exactly 1 label we can skip
-                labels = {
-                    n
-                    for n in sg.nodes
-                    if G_trimmed_grp.nodes[n].get("type", None) != "neuron"
-                }
-                if len(labels) == 1:
-                    continue
-
+            if len(labels) > 1:
                 # Check if we can split this connected component into smaller components
+                # without losing the mapping between datasets
                 partitions = split_check_recursive(sg)
+            else:
+                partitions = [set(sg.nodes)]
 
-                # If we can't split this connected component, we can skip
-                if len(partitions) == 1:
-                    continue
+            # Track edges needed to split the partitions
+            for p in partitions:
+                # Make subgraph for this partition
+                sgp = sg.subgraph(p)
 
-                # If we can split this connected component, we need to find edge that need to be removed
-                sg_keep_edges = set()
-                for p in partitions:
-                    sg_keep_edges.update(
-                        [(s, t) for s, t in sg.edges if s in p and t in p]
-                    )
+                # Get the edges in this partition and keep only those
+                keep_edges.update(sgp.edges)
 
-                # Add the difference to the spurious edges
-                for edge in set(sg.edges) - sg_keep_edges:
-                    # Translate any groups back into individual body IDs
-                    if str(edge[0]).startswith("group"):
-                        source = [s for s in sg.nodes[edge[0]]["ids"].split(",")]
-                    else:
-                        source = [edge[0]]
-
-                    if str(edge[1]).startswith("group"):
-                        target = [s for s in sg.nodes[edge[1]]["ids"].split(",")]
-                    else:
-                        target = [edge[1]]
-
-                    for s in source:
-                        for t in target:
-                            self.spurious_edges_.append((s, t))
-
-            # Remove edges
-            if len(self.spurious_edges_):
-                self.report(
-                    f"  Removing {len(self.spurious_edges_)} potentially spurious edges from the graph.",
-                    flush=True,
-                )
-                # Note to self: in a previous version I had issues that some edges were not removed
-                # Turned out that was because I collected the edges from the *undirected* graph
-                # but tried to remove them from the *directed* graph which silently failed.
-                # We have since changed the code such that `G_trimmed` is always undirected.
-                G_trimmed.remove_edges_from(self.spurious_edges_)
+        # Subset to only include the nodes & edges we want to keep.
+        # Note to self: in a previous version I had issues that some edges were not removed
+        # Turned out that was because I collected the edges from the *undirected* graph
+        # but tried to remove them from the *directed* graph which silently failed.
+        # We have since changed the code such that the graph is always undirected.
+        G_trimmed = G_grp.edge_subgraph(keep_edges)
 
         # Generate mappings between labels
         mappings = {}
@@ -892,18 +835,14 @@ class GraphMapper(BaseMapper):
             if len(ccn) == 1:
                 continue
 
+            # Get the subgraph for this connected component
+            sg = G_trimmed.subgraph(ccn)
+
             # Now we have to make sure this connected component is actually connected to all datasets
             # It is possible that we had a group with a mix of compound and single labels from which one
             # subcomponent was extracted (via the shortest path) which then left the other label dangling.
-            skip = False
-            ccn_neurons = ccn & neurons
-            for ds in datasets:
-                if not any(
-                    G_trimmed.nodes[n].get(ds.label, False) for n in ccn_neurons
-                ):
-                    skip = True
-                    break
-            if skip:
+            sg_datasets = set(nx.get_node_attributes(sg, "dataset").values())
+            if any(label not in sg_datasets for label in ds_labels):
                 printv(
                     f"  Skipping connected component due to missing datasets:\n    {ccn}",
                     verbose=self.verbose,
@@ -912,14 +851,20 @@ class GraphMapper(BaseMapper):
 
             # Generate a new label for this connected component
             ccn_labels = ccn & labels
+
             # Make sure we first split compound labels
+            # N.B. we're sorting the labels to make sure this is deterministic
             new_label = ",".join(
-                sorted(set([l for label in ccn_labels for l in label.split(",")]))
+                sorted(set([l.strip() for label in ccn_labels for l in label.split(",")]))
             )
 
             # Assign the new label to the neurons in this connected component
-            for l in ccn - ccn_labels:
-                mappings[l] = new_label
+            for id in [
+                id
+                for string in nx.get_node_attributes(sg, "ids").values()
+                for id in string.split(",")
+            ]:
+                mappings[id] = new_label
 
         # Add good labels - note that this is will not be reflected in the (trimmed) graph
         n_good = 0
@@ -1174,13 +1119,14 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
     except ZeroDivisionError:
         ratio = None
 
-    # Split in two. Note: this may not actually split into two connected components!
+    # Split in two. Note: this may not actually split into 2 connected components!
     split = nx.community.greedy_modularity_communities(G, best_n=2, weight="weight")
 
     printv(
-        f"Trying to split {G.nodes} into {len(split)} groups ({n_ds} = {ratio}).",
+        f"Trying to split {G.nodes} into {len(split)} groups ({n_ds} = {ratio}):",
         verbose=verbose,
         flush=True,
+        end=" ",
     )
 
     # Check if the split is valid
@@ -1192,7 +1138,9 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
         if not ds == {G.nodes[n].get("dataset", None) for n in neurons}:
             valid = False
             printv(
-                f"  Rejected: invalid group {list(group)}.", flush=True, verbose=verbose
+                f" REJECTED due to invalid group {list(group)}.",
+                flush=True,
+                verbose=verbose,
             )
             break
 
@@ -1208,7 +1156,7 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
             if (ratio2 / ratio > 2.5) or (ratio / ratio2 > 2.5):
                 valid = False
                 printv(
-                    f"  Rejected: invalid ratios for group {list(group)} ({n_ds} = {ratio2} vs {ratio}).",
+                    f"REJECTED due to invalid ratios for group {list(group)} ({n_ds} = {ratio2} vs {ratio}).",
                     flush=True,
                     verbose=verbose,
                 )
@@ -1217,9 +1165,9 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
     if not valid:
         partitions.append(set(G.nodes))
     else:
-        printv("  Split accepted.", verbose=verbose, flush=True)
+        printv("ACCEPTED!", verbose=verbose, flush=True)
         for neuron_set in split:
-            split_check_recursive(G.subgraph(neuron_set).copy(), partitions=partitions)
+            split_check_recursive(G.subgraph(neuron_set).copy(), partitions=partitions, verbose=verbose)
 
     return partitions
 
