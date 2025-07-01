@@ -52,7 +52,7 @@ FLYWIRE_BAD_TYPES = (
     "mAL",
     "mAL1,mAL2A,mAL2B,mAL3A,mAL3B,mAL4,mAL5A,mAL5B,mAL6",
     "",
-    " "
+    " ",
 )
 
 FLYWIRE_LIVE_COLUMNS = [
@@ -76,8 +76,10 @@ FLYWIRE_LIVE_COLUMNS = [
     "synonyms",
 ]
 
-CLIO_MCNS_CLIENT = "CNS"
-CLIO_MANC_CLIENT = "VNC"  # 'VNC' is the production dataset
+CLIO_MCNS_DATASET = "CNS"
+CLIO_MANC_DATASET = "VNC"  # 'VNC' is the production dataset
+
+NEUPRINT_MCNS_DATASET = "cns"
 
 
 def download_cache_file(url, force_reload="auto", verbose=True):
@@ -296,9 +298,13 @@ def _get_hemibrain_meta(live=False):
 
 @lru_cache
 def _get_mcns_meta(source):
-    assert source in ("clio", "neuprint")
-    if source == "clio":
-        client = _get_clio_client(CLIO_MCNS_CLIENT)
+    assert isinstance(source, str)
+    if source.startswith("clio"):
+        if "/" in source:
+            dataset = source.split("/")[-1]
+        else:
+            dataset = CLIO_MCNS_DATASET
+        client = _get_clio_client(dataset=dataset)
         ann = clio.fetch_annotations(None, client=client)
 
         # Some processing to align between the two sources
@@ -313,25 +319,32 @@ def _get_mcns_meta(source):
                 )
 
         # Rename columns
-        new_col_names['bodyid'] = 'bodyId'
+        new_col_names["bodyid"] = "bodyId"
 
         return ann.rename(
             new_col_names,
             axis=1,
         )
-    else:
-        client = _get_neuprint_mcns_client()
+    elif source.startswith("neuprint"):
+        if "/" in source:
+            dataset = source.split("/")[-1]
+        else:
+            dataset = NEUPRINT_MCNS_DATASET
+        client = _get_neuprint_mcns_client(dataset=NEUPRINT_MCNS_DATASET)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
+            omit_rois=True,
             client=client,
-        )[0]
+        )
+    else:
+        raise ValueError(f"Unknown male CNS source: {source}. ")
 
 
 @lru_cache
 def _get_manc_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
-        client = _get_clio_client(CLIO_MANC_CLIENT)
+        client = _get_clio_client(CLIO_MANC_DATASET)
         ann = clio.fetch_annotations(None, client=client)
 
         return ann.rename(
@@ -342,8 +355,9 @@ def _get_manc_meta(source):
         client = _get_neuprint_manc_client()
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
+            omit_rois=True,
             client=client,
-        )[0]
+        )
 
 
 @lru_cache
@@ -353,8 +367,8 @@ def _get_neuprint_hemibrain_client(version="1.2.1"):
 
 
 @lru_cache
-def _get_neuprint_mcns_client():
-    return neu.Client("https://neuprint-cns.janelia.org", dataset="cns")
+def _get_neuprint_mcns_client(dataset="cns"):
+    return neu.Client("https://neuprint-cns.janelia.org", dataset=dataset)
 
 
 @lru_cache

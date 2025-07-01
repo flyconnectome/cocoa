@@ -70,7 +70,8 @@ class MaleCNS(JaneliaDataSet):
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
     meta_source :       "clio" | "neuprint"
-                        Source for meta data.
+                        Source for meta data. You can also provide a specific
+                        dataset by passing e.g. "neuprint/male-cns:v0.9".
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
@@ -268,7 +269,8 @@ class MaleCNS(JaneliaDataSet):
         ----------
         source :    "neuprint" | "clio"
                     Source for annotations. If `None`, will use the default source set during
-                    dataset creation.
+                    dataset creation. You can provide a specific dataset by passing
+                    e.g. "neuprint/male-cns:v0.9".
         clear_cache : bool
                     Whether to clear the cache before fetching the data.
 
