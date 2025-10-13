@@ -295,7 +295,7 @@ class BaseMapper:
 
         return counts
 
-    def get_subgraph(self, nodes):
+    def get_subgraph(self, nodes, full_graph=False):
         """Compiles a subgraph around the given nodes.
 
         This can be useful for inspecting the graph around a specific label.
@@ -304,6 +304,9 @@ class BaseMapper:
         ----------
         nodes : list
                 List of nodes to include in the subgraph.
+        full_graph : bool
+                If True will return the full subgraph where neurons aren't collapsed
+                into group.
 
         Returns
         -------
@@ -315,21 +318,23 @@ class BaseMapper:
         if not hasattr(self, "graph_"):
             raise ValueError("Must compile first.")
 
+        G = self.graph_ if not full_graph else self.graph_full_.to_undirected()
+
         if isinstance(nodes, (str, Number)):
             nodes = [nodes]
 
-        miss = [n for n in nodes if n not in self.graph_]
+        miss = [n for n in nodes if n not in G]
         if any(miss):
             raise ValueError(f"Nodes {miss} not found in the graph.")
 
         # Collect all connected components that contain the given nodes
         nbunch = []
-        for ccn in nx.connected_components(self.graph_):
+        for ccn in nx.connected_components(G):
             if any(n in ccn for n in nodes):
                 nbunch.extend(ccn)
 
         # Generate subgraph
-        G = self.graph_.subgraph(nbunch).copy()
+        G = G.subgraph(nbunch).copy()
 
         # To facilitate inspection, we will add source labels to the edges
         edge_sources = {}
