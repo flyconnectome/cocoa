@@ -213,13 +213,17 @@ def _load_live_flywire_annotations(mat=None):
     )
     info = _get_table(which="info")
     optic = _get_table(which="optic")
+    cols = FLYWIRE_LIVE_COLUMNS.copy()
+    if mat == 783:
+        cols.remove("root_id")
+        cols += ["root_783"]
     table = pd.concat(
         (
-            info.loc[info.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
-            optic.loc[optic.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+            info.loc[info.flow.notnull(), cols],
+            optic.loc[optic.flow.notnull(), cols],
         ),
         axis=0,
-    ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
+    ).astype({c: np.int64 for c in ["root_id", "supervoxel_id"] if c in cols})
 
     # Keep only neurons
     table = table[table.flow.notnull()]
@@ -227,7 +231,11 @@ def _load_live_flywire_annotations(mat=None):
     # Drop duplicates
     table = table[~table.status.isin(["duplicate", "bad_nucleus"])].copy()
 
-    if mat not in ("live", "current", None):
+    if mat == 783:
+        table["root_id"] = table["root_783"].values
+        table.drop("root_783", axis=1, inplace=True)
+        table = table[table.root_id.notnull()].copy().astype({"root_id": np.int64})
+    elif mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
         to_update = ~flywire.is_latest_root(
             table.root_id, timestamp=timestamp, progress=False
