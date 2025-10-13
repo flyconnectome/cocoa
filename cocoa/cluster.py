@@ -1052,7 +1052,7 @@ def generate_clustering(
     live_annot=False,
     upstream=True,
     downstream=True,
-    fw_cn_file=None,
+    fw_cn_object=None,
     fw_materialization=783,
     exclude_queries=False,
     mcns_cn_object=None,
@@ -1086,10 +1086,10 @@ def generate_clustering(
                 Whether to use input connectivity.
     downstream : bool
                 Whether to use output connectivity.
-    fw_cn_file : str
-                Path to FlyWire edge list.
+    fw_cn_object : str
+                Path to or DataFrame containing FlyWire edge list.
     fw_materialization : int
-                Materialization to use for FlyWire. Must match `fw_cn_file` if
+                Materialization to use for FlyWire. Must match `fw_cn_object` if
                 that is provided.
     mcns/hb/mcns_cn_object : str | pd.DataFrame
                 Either a DataFrame or path to a `.feather` connectivity file which
@@ -1110,7 +1110,7 @@ def generate_clustering(
             upstream=upstream,
             downstream=downstream,
             label="FW",
-            cn_file=fw_cn_file,
+            cn_object=fw_cn_object,
             materialization=fw_materialization,
         ).add_neurons(fw)
         # Now split into left/right
@@ -1124,7 +1124,7 @@ def generate_clustering(
                 upstream=upstream,
                 downstream=downstream,
                 label="FwL",
-                cn_file=fw_cn_file,
+                cn_object=fw_cn_object,
                 exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[is_left])
@@ -1133,7 +1133,7 @@ def generate_clustering(
                 upstream=upstream,
                 downstream=downstream,
                 label="FwR",
-                cn_file=fw_cn_file,
+                cn_object=fw_cn_object,
                 exclude_queries=exclude_queries,
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[~is_left])
