@@ -1,3 +1,4 @@
+import re
 import copy
 
 import numpy as np
@@ -127,19 +128,27 @@ class FlyWire(DataSet):
         self.live_annot = live_annot
         self.materialization = materialization
 
-        if self.cn_file is not None:
-            self.cn_file = Path(self.cn_file).expanduser()
-            if not self.cn_file.is_file():
-                raise ValueError(f'"{self.cn_file}" is not a valid file')
-            check_filename_mat(self.materialization, self.cn_file)
+    def _add_neurons(self, x, regex="auto", sides=None):
+        """Turn `x` into FlyWire root IDs.
 
-    def _add_neurons(self, x, exact=True, sides=None):
-        """Turn `x` into FlyWire root IDs."""
+        Parameters
+        ----------
+        x :         int | str | list | np.ndarray | pd.Series | None
+                    Root IDs or cell types to add. Can also use "{column}:{value}" to filter
+                    for values in given column.
+        regex :     "auto" | bool
+                    Whether strings are interpreted as regular expressions.
+                    If "auto" (default), will treat strings starting with "/" as regex.
+        sides :     str | iterable | None
+                    If provided, will only add neurons on the given side(s).
+
+        """
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
-        if not exact and isinstance(x, str) and "," in x:
-            x = x.split(",")
+        if regex == "auto" and isinstance(x, str):
+            regex = x.startswith("/")
+            x = x[1:] if regex else x
 
         if isinstance(x, pd.Series):
             x = x.values
@@ -147,14 +156,14 @@ class FlyWire(DataSet):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
+                ids = np.append(ids, self._add_neurons(t, regex=regex, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
             annot = self.get_annotations()
 
             if ":" not in x:
-                if exact:
+                if not regex:
                     filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
                 else:
                     filt = annot.cell_type.str.contains(
@@ -163,7 +172,7 @@ class FlyWire(DataSet):
             else:
                 # If this is e.g. "cell_class:L1-5"
                 col, val = x.split(":")
-                if exact:
+                if not regex:
                     filt = annot[col] == val
                 else:
                     filt = annot[col].str.contains(val, na=False)

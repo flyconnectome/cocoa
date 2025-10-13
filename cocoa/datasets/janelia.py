@@ -42,13 +42,27 @@ class JaneliaDataSet(DataSet, ABC):
             self._cn_object = None
 
 
-    def _add_neurons(self, x, exact=True, sides=None):
-        """Turn `x` into body IDs."""
+    def _add_neurons(self, x, regex="auto", sides=None):
+        """Turn `x` into body IDs.
+
+        Parameters
+        ----------
+        x :         int | str | list | np.ndarray | pd.Series | None
+                    Body IDs or cell types to add. Can also use "{column}:{value}" to filter
+                    for values in given column.
+        regex :     "auto" | bool
+                    Whether strings are interpreted as regular expressions.
+                    If "auto" (default), will treat strings starting with "/" as regex.
+        sides :     str | iterable | None
+                    If provided, will only add neurons on the given side(s).
+
+        """
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
-        if not exact and isinstance(x, str) and "," in x:
-            x = x.split(",")
+        if regex == "auto" and isinstance(x, str):
+            regex = x.startswith('/')
+            x = x[1:] if regex else x
 
         if isinstance(x, pd.Series):
             x = x.values
@@ -56,7 +70,7 @@ class JaneliaDataSet(DataSet, ABC):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
+                ids = np.append(ids, self._add_neurons(t, regex=regex, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
@@ -67,7 +81,7 @@ class JaneliaDataSet(DataSet, ABC):
                 for c in self._type_columns:
                     if c not in annot.columns:
                         continue
-                    if exact:
+                    if not regex:
                         filt = filt | (annot[c] == x).values
                     else:
                         filt = filt | annot.type.str.contains(
@@ -76,7 +90,7 @@ class JaneliaDataSet(DataSet, ABC):
             else:
                 # If this is e.g. "cell_class:L1-5"
                 col, val = x.split(":")
-                if exact:
+                if not regex:
                     filt = annot[col] == val
                 else:
                     filt = annot[col].str.contains(val, na=False)
