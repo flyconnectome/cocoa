@@ -1,3 +1,4 @@
+import os
 import clio
 import requests
 
@@ -79,7 +80,8 @@ FLYWIRE_LIVE_COLUMNS = [
 CLIO_MCNS_DATASET = "CNS"
 CLIO_MANC_DATASET = "VNC"  # 'VNC' is the production dataset
 
-NEUPRINT_MCNS_DATASET = "cns"
+NEUPRINT_URL = "https://neuprint.janelia.org"
+NEUPRINT_MCNS_DATASET = "male-cns:latest"
 
 
 def download_cache_file(url, force_reload="auto", verbose=True):
@@ -330,7 +332,10 @@ def _get_mcns_meta(source):
             dataset = source.split("/")[-1]
         else:
             dataset = NEUPRINT_MCNS_DATASET
-        client = _get_neuprint_mcns_client(dataset=NEUPRINT_MCNS_DATASET)
+
+        dataset = _parse_neuprint_dataset(dataset)
+
+        client = _get_neuprint_mcns_client(dataset=dataset)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
             omit_rois=True,
@@ -361,20 +366,70 @@ def _get_manc_meta(source):
 
 
 @lru_cache
-def _get_neuprint_hemibrain_client(version="1.2.1"):
-    version = version[1:] if version.startswith("v") else version
-    return neu.Client("https://neuprint.janelia.org", dataset=f"hemibrain:v{version}")
+def _get_neuprint_datasets():
+    """Get available neuPrint datasets."""
+    token = os.environ.get("NEUPRINT_APPLICATION_CREDENTIALS")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{NEUPRINT_URL}/api/dbmeta/datasets", headers=headers)
+    r.raise_for_status()
+    return list(r.json())
 
 
 @lru_cache
-def _get_neuprint_mcns_client(dataset="cns"):
-    return neu.Client("https://neuprint-cns.janelia.org", dataset=dataset)
+def _parse_neuprint_dataset(dataset):
+    available = _get_neuprint_datasets()
+    if ":" in dataset:
+        # If dataset and version is given (e.g. "male-cns:latest" or "male-cns:v0.9")
+        dataset, version = dataset.split(":")
+        versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
+        if not versions:
+            raise ValueError(
+                f"No neuPrint dataset matching '{dataset}' found in available neuPrint datasets: {available}"
+            )
+
+        if version == "latest":
+            version = max(versions)
+        elif version not in versions:
+            raise ValueError(
+                f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
+            )
+        dataset = f"{dataset}:{version}"
+    else:
+        # If only dataset is given (e.g. "male-cns")
+        versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
+
+        if not versions:
+            raise ValueError(
+                f"No neuPrint dataset matching '{dataset}' found in available neuPrint datasets: {available}"
+            )
+
+        if versions:
+            version = max(versions)
+        else:
+            raise ValueError(
+                f"Dataset '{dataset}' not found in available neuPrint datasets: {available}"
+            )
+        dataset = f"{dataset}:{version}"
+
+    return dataset
+
+
+@lru_cache
+def _get_neuprint_hemibrain_client(version="1.2.1"):
+    version = version[1:] if version.startswith("v") else version
+    return neu.Client(NEUPRINT_URL, dataset=f"hemibrain:v{version}")
+
+
+@lru_cache
+def _get_neuprint_mcns_client(dataset):
+    dataset = _parse_neuprint_dataset(dataset)
+    return neu.Client(NEUPRINT_URL, dataset=dataset)
 
 
 @lru_cache
 def _get_neuprint_manc_client(version="1.2.1"):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client("https://neuprint.janelia.org", dataset=f"manc:v{version}")
+    return neu.Client(NEUPRINT_URL, dataset=f"manc:v{version}")
 
 
 @lru_cache

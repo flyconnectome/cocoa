@@ -109,13 +109,26 @@ class DataSet(ABC):
         metric="cosine",
         force_recompile=False,
         augment=None,
-        labelled_only=True,
+        labeled_only=True,
         verbose=True,
     ):
         """Calculate cosine distance for neurons in this dataset.
 
         Parameters
-        ---------
+        ----------
+        metric :            str
+                            Distance metric to use. Default is "cosine".
+        force_recompile :   bool
+                            Whether to recompile the connectivity vector.
+        augment :           str | None
+                            Augment the connectivity vector with additional
+                            information. Default is None.
+        labeled_only :     bool
+                            Whether to only use neurons with labels. Default is
+                            True.
+        verbose :           bool
+                            Whether to print progress. Default is True.
+
         """
         if not hasattr(self, "edges_") or force_recompile:
             printv(

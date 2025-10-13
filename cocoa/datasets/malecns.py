@@ -19,6 +19,7 @@ from .ds_utils import (
     _parse_neuprint_roi,
     _find_column,
     MCNS_BAD_TYPES,
+    NEUPRINT_MCNS_DATASET,
 )
 from ..utils import collapse_neuron_nodes
 
@@ -69,9 +70,10 @@ class MaleCNS(JaneliaDataSet):
                         Restrict connectivity to these regions of interest. Works
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
-    meta_source :       "clio" | "neuprint"
+    meta_source :       "neuprint" (default) | "clio"
                         Source for meta data. You can also provide a specific
-                        dataset by passing e.g. "neuprint/male-cns:v0.9".
+                        dataset by passing e.g. "neuprint/male-cns:v0.9". If not
+                        specified, will use the latest version available.
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
@@ -121,7 +123,13 @@ class MaleCNS(JaneliaDataSet):
             if not backfill_types:
                 backfill_types = None
             else:
-                backfill_types = ("flywire_type", "hemibrain_type", "manc_type", "group", "instance")
+                backfill_types = (
+                    "flywire_type",
+                    "hemibrain_type",
+                    "manc_type",
+                    "group",
+                    "instance",
+                )
         elif not isinstance(backfill_types, (list, tuple)):
             raise ValueError(
                 "`backfill_types` must be a str, a list or tuple or `None`"
@@ -132,7 +140,11 @@ class MaleCNS(JaneliaDataSet):
     @property
     def neuprint_client(self):
         """Return neuprint client."""
-        return _get_neuprint_mcns_client()
+        if self.meta_source.startswith("neuprint") and "/" in self.meta_source:
+            dataset = self.meta_source.split("/")[-1]
+        else:
+            dataset = NEUPRINT_MCNS_DATASET
+        return _get_neuprint_mcns_client(dataset=dataset)
 
     @property
     def rois(self):
@@ -338,7 +350,7 @@ class MaleCNS(JaneliaDataSet):
 
     def get_ngl_scene(self, in_flywire_space=False):
         client = _get_clio_client("CNS")
-        seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
+        seg_source = f"dvid://{client.meta['dvid']}/{client.meta['uuid']}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app"
         if not in_flywire_space:
             scene = copy.deepcopy(client.meta["neuroglancer"])
             scene.layers.append(
@@ -509,7 +521,9 @@ class MaleCNS(JaneliaDataSet):
             G.add_edges_from(zip(this.bodyId, this[col]))
 
             # Track which column(s) this label came from
-            nx.set_edge_attributes(G, {e: {col: True} for e in zip(this.bodyId, this[col])})
+            nx.set_edge_attributes(
+                G, {e: {col: True} for e in zip(this.bodyId, this[col])}
+            )
 
             # Take care of compound types
             comp = this[
@@ -523,9 +537,7 @@ class MaleCNS(JaneliaDataSet):
             for c, count in zip(*np.unique(comp, return_counts=True)):
                 # We have to avoid splitting e.g. "DVMn 3a, b" into "DVMn 3a" and "b"
                 # If any of the split labels is just a single letter, we'll skip it
-                if any(
-                    len(s.strip()) == 1 for s in c.split(",")
-                ):
+                if any(len(s.strip()) == 1 for s in c.split(",")):
                     continue
 
                 for c2 in c.split(","):

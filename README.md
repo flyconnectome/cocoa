@@ -13,7 +13,7 @@ Currently implemented are:
 1. FlyWire
 2. hemibrain
 3. MANC
-4. maleCNS (not public yet)
+4. maleCNS
 
 On the TODO list:
 - female adult nerve cord (FANC)
@@ -32,7 +32,7 @@ pip3 install git+https://github.com/flyconnectome/cocoa.git -U
 All dependencies should be installed automatically. However, to use the
 pre-define datasets you will need to set a couple environment variables and
 secrets:
-1. To use neuPrint datasets (hemibrain, MANC and maleCNS) you need to set your
+1. To use the neuPrint datasets (hemibrain, MANC and maleCNS) you need to set your
    API token as `NEUPRINT_APPLICATION_CREDENTIALS`
    (see [neuprint-python](https://github.com/connectome-neuprint/neuprint-python))
 2. To use the CAVE/chunkedgraph datasets (FlyWire, FANC) you need to have your
@@ -47,15 +47,12 @@ secrets:
 >>> import cocoa as cc
 >>> # Define the sets of neurons to co-cluster
 >>> hb = cc.Hemibrain(label='hemibrain',
-...                   live_annot=True  # this make sure we use data from flytable
-...                   ).add_neurons(['SLP001', 'SLP003'], sides='right')
+...                   ).add_neurons(['SLP001', 'SLP003'])
 >>> fwl = cc.FlyWire(label='FlyWire_left',
 ...                  materialization=783,
-...                  live_annot=True  # this make sure we use data from flytable
 ...                  ).add_neurons(['SLP001', 'SLP003'], sides='left')
 >>> fwr = cc.FlyWire(label='FlyWire_right',
 ...                  materialization=783,
-...                  live_annot=True  # this make sure we use data from flytable
 ...                  ).add_neurons(['SLP001', 'SLP003'], sides='right')
 >>> # Combine into a clustering and co-cluster
 >>> cl = cc.Clustering([hb, fwl, fwr]).compile()
