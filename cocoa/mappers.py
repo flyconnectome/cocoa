@@ -432,7 +432,8 @@ class SimpleMapper(BaseMapper):
             # Copy the mappings to the current instance
             other = self._CACHE[ds_identifier]
             for attr in ("mappings_",):
-                setattr(self, attr, getattr(other, attr))
+                if hasattr(other, attr):
+                    setattr(self, attr, getattr(other, attr))
 
             return self
 
@@ -509,6 +510,10 @@ class GraphMapper(BaseMapper):
                     by looking for matching labels. If True, will only match labels
                     that are meant to be a match - e.g. FlyWire "cell_type" to
                     maleCNS "flywire_type" or FlyWire "male_cns_type" to male CNS "type".
+    labels :        "first" | "all"
+                    Determines how the label for a group of neurons is chosen:
+                      - "first" (default): the alphabetically first label in the group is used
+                      - "all": all labels in the group are used, separated by commas
     verbose :       bool
                     If True, will print progress messages.
 
@@ -520,12 +525,22 @@ class GraphMapper(BaseMapper):
     # TODOs:
     # - use direct mappings where available (e.g. the "hb123456" hemibrain types in FlyWire)
 
-    def __init__(self, *datasets, allow_indirect=False, strict=False, verbose=True):
+    def __init__(
+        self,
+        *datasets,
+        allow_indirect=False,
+        strict=False,
+        labels="first",
+        verbose=True,
+    ):
+        assert labels in ("first", "all"), "labels must be either 'first' or 'all'."
+
         self.strict = strict
         self._synonyms = {}
         self._graph_processors = []
         self._bad_labels = []
         self._good_labels = []
+        self._label_mode = labels
         self.allow_indirect = allow_indirect
         super().__init__(*datasets, verbose=verbose)
 
@@ -609,7 +624,12 @@ class GraphMapper(BaseMapper):
         # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
         # Build a hashable identifier for this mapper instance
-        self_identifier = (ds_identifier, self.allow_indirect, self.strict)
+        self_identifier = (
+            ds_identifier,
+            self.allow_indirect,
+            self.strict,
+            self._label_mode,
+        )
         ds_string = ", ".join([d.type for d in datasets])
         if self_identifier in self._CACHE and not force_rebuild:
             self.report(
@@ -618,8 +638,9 @@ class GraphMapper(BaseMapper):
             )
             # Copy the mappings to the current instance
             other = self._CACHE[self_identifier]
-            for attr in ("mappings_", "graph_", "spurious_edges_"):
-                setattr(self, attr, getattr(other, attr))
+            for attr in ("mappings_", "graph_", "graph_full_", "spurious_edges_"):
+                if hasattr(other, attr):
+                    setattr(self, attr, getattr(other, attr))
 
             return self
 
@@ -859,9 +880,23 @@ class GraphMapper(BaseMapper):
 
             # Make sure we first split compound labels
             # N.B. we're sorting the labels to make sure this is deterministic
-            new_label = ",".join(
-                sorted(set([l.strip() for label in ccn_labels for l in label.split(",")]))
-            )
+            if self._label_mode == "all":
+                new_label = ",".join(
+                    sorted(
+                        set(
+                            [
+                                l.strip()
+                                for label in ccn_labels
+                                for l in label.split(",")
+                            ]
+                        )
+                    )
+                )
+            elif self._label_mode == "first":
+                # Sort such that we prefer shorter, non-compound labels
+                new_label = sorted(ccn_labels, key=lambda x: (len(x.split(",")), x))[0]
+            else:
+                raise ValueError(f"Unknown label mode: {self._label_mode}")
 
             # Assign the new label to the neurons in this connected component
             for id in [
@@ -897,6 +932,8 @@ class GraphMapper(BaseMapper):
         # Store the results
         self.mappings_ = mappings
         self.graph_ = G_trimmed
+        self.graph_grp_ = G_grp  # keep the trimmed graph for inspection
+        self.graph_full_ = G  # keep the full graph for inspection
 
         # Cache the results
         self._CACHE[self_identifier] = self
@@ -1172,7 +1209,9 @@ def split_check_recursive(G, partitions=None, check_ratio=True, verbose=False):
     else:
         printv("ACCEPTED!", verbose=verbose, flush=True)
         for neuron_set in split:
-            split_check_recursive(G.subgraph(neuron_set).copy(), partitions=partitions, verbose=verbose)
+            split_check_recursive(
+                G.subgraph(neuron_set).copy(), partitions=partitions, verbose=verbose
+            )
 
     return partitions
 
