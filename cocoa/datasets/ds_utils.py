@@ -77,6 +77,18 @@ FLYWIRE_LIVE_COLUMNS = [
     "synonyms",
 ]
 
+HEMIBRAIN_LIVE_COLUMNS = [
+    "bodyId",
+    "super_class",
+    "cell_class",
+    "type",
+    "instance",
+    "side",
+    "morphology_type",
+    "cellBodyFiber",
+    "ito_lee_hemilineage",
+]
+
 CLIO_MCNS_DATASET = "CNS"
 CLIO_MANC_DATASET = "VNC"  # 'VNC' is the production dataset
 
@@ -281,9 +293,7 @@ def _load_live_hemibrain_annotations():
         flush=True,
     )
 
-    table = ss.Table("hb_info", "hemibrain")[
-        ["bodyId", "side", "type", "morphology_type"]
-    ]
+    table = ss.Table("hb_info", "hemibrain")[HEMIBRAIN_LIVE_COLUMNS]
     print("Done.")
 
     return table
