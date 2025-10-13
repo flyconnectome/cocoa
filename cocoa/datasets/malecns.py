@@ -99,7 +99,7 @@ class MaleCNS(JaneliaDataSet):
         exclude_autapses=True,
         use_sides=False,
         rois=None,
-        meta_source="clio",
+        meta_source="neuprint",
         exclude_queries=False,
         cn_object=None,
     ):
