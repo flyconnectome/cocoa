@@ -5,17 +5,16 @@
 `cocoa` is a Python library for **co**mparative **co**nnectomics **a**nalyses.
 
 It implements various dataset-agnostic as well as dataset-specific methods
-for matching, co-clustering and cell typing, including fetching annotations,
-connectivity and neurons.
+for matching, connectivity, co-clustering and cell typing.
 
 Currently implemented are:
 
-1. FlyWire
-2. hemibrain
-3. MANC
-4. maleCNS
+1. [FlyWire](https://flywire.ai)
+2. [hemibrain](https://neuprint.janelia.org/?dataset=hemibrain%3Av1.2.1&qt=findneurons)
+3. [MANC](https://neuprint.janelia.org/?dataset=manc%3Av1.2.3&qt=findneurons)
+4. [male CNS](https://neuprint.janelia.org/?dataset=male-cns%3Av0.9&qt=findneurons)
 
-On the TODO list:
+On the TO-DO list:
 - female adult nerve cord (FANC)
 - brain and nerve cord (BANC)
 
@@ -41,6 +40,19 @@ secrets:
    make sure to set the `SEATABLE_SERVER` and `SEATABLE_TOKEN` environment variables
    (see [sea-serpent](https://github.com/schlegelp/sea-serpent))
 
+## Concepts
+
+The main concept in `cocoa` is that of a `DataSet`. A `DataSet` represents
+a collection of neurons from a specific source (e.g. FlyWire or hemibrain),
+and provides methods to fetch annotations and connectivity"
+
+While you can use `cocoa` to run clusterings on just a single dataset,
+its real power lies in co-clustering neurons from multiple datasets. To do
+this, it aut-magically computes mappings between neurons from different
+datasets based on available labels. These labels are then used to
+generate a joint connectivity vector from which we can compute pairwise
+distances.
+
 ## Examples
 
 ```Python
@@ -56,7 +68,18 @@ secrets:
 ...                  ).add_neurons(['SLP001', 'SLP003'], sides='right')
 >>> # Combine into a clustering and co-cluster
 >>> cl = cc.Clustering([hb, fwl, fwr]).compile()
->>> # The clustering `cl` contains the results of the clustering...
+>>> # The clustering `cl` contains the results of the clustering.
+>>> # The joint connectivity vector:
+>>> cl.vect_
+                   downstream                          ... upstream
+                      LHAV1b1 LHPV4g1 LHAV5e1 LHAV1b3  ...    CL018 CL077 SLP202 LC9
+294437347                   0       0       1       0  ...        0     0      0   0
+543692985                   0       0       0       4  ...        0     6      0   1
+720575940617091414          0       0       1       0  ...        0     0      0   0
+720575940623050334          0       0       0       2  ...        1     1      0   0
+720575940627960442          0       0       1       0  ...        0     0      1   0
+720575940628895750          1       4       0       3  ...        0     5      0   0
+>>> # The pairwise (cosine) distances:
 >>> cl.dists_
                     SLP001_hemibrain  ...  SLP003_FlyWire_right
 294437347                   0.000000  ...              0.990616
@@ -65,7 +88,7 @@ secrets:
 720575940623050334          0.993146  ...              0.046200
 720575940627960442          0.218134  ...              0.992618
 720575940628895750          0.990616  ...              0.000000
->>> # ... and provides some useful methods to work with the data
+>>> # It also provides some useful methods to work with the data
 >>> table = cl.to_table(clusters=cl.extract_homogeneous_clusters())
 >>> table
                    id   label        dataset  cn_frac_used  dend_ix  cluster
@@ -87,3 +110,5 @@ That may be enough in cases where you don't need fine-grained control.
 ...            hb=['SLP001', 'SLP002']
 ...         ).compile()
 ```
+
+See the notebooks in [examples/](examples/) for more elaborate examples.
