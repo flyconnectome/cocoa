@@ -949,7 +949,9 @@ class Clustering:
         if ax is None:
             fig, ax = plt.subplots()
 
-        sc = ax.scatter(xy[:, 0], xy[:, 1], **kwargs)
+        sns.scatterplot(
+            x=xy[:, 0], y=xy[:, 1], hue=self.vect_sources_, ax=ax, **kwargs
+        )
 
         ax.set_xlabel("UMAP 1")
         ax.set_ylabel("UMAP 2")
