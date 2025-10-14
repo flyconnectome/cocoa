@@ -36,7 +36,7 @@ secrets:
    (see [neuprint-python](https://github.com/connectome-neuprint/neuprint-python))
 2. To use the CAVE/chunkedgraph datasets (FlyWire, FANC) you need to have your
    CAVE token set (see [fafbseg](https://fafbseg-py.readthedocs.io/en/latest/source/tutorials/flywire_setup.html))
-3. For internal use only: if you want to use the live annotations from flytable
+3. _For internal use only_: if you want to use the live annotations from flytable
    make sure to set the `SEATABLE_SERVER` and `SEATABLE_TOKEN` environment variables
    (see [sea-serpent](https://github.com/schlegelp/sea-serpent))
 
@@ -120,7 +120,7 @@ That may be enough in cases where you don't need fine-grained control.
 - `1_malecns_flywire_mapping.ipynb`: show how to use `cocoa` to generate mappings between neurons from different datasets
 - `2_malecns_flywire_optic_lobes.ipynb`: demonstrates a large-scale (~160k neurons) co-clustering between two datasets
 
-In addition,all functions/classes have extensive docstrings:
+In addition, all functions/classes have extensive docstrings:
 
 ```python
 >>> help(cc.Clustering.compile)
