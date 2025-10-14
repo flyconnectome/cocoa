@@ -111,4 +111,55 @@ That may be enough in cases where you don't need fine-grained control.
 ...         ).compile()
 ```
 
-See the notebooks in [examples/](examples/) for more elaborate examples.
+## Documentation
+
+`cocoa` does not yet have a dedicated documentation but all functions/classes have
+extensive docstrings:
+
+```python
+>>> help(cc.Clustering.compile)
+cc.Clustering.compile(
+    self,
+    join='outer',
+    metric='cosine',
+    mapper=<class 'cocoa.mappers.GraphMapper'>,
+    force_recompile=False,
+    exclude_labels=None,
+    include_labels=None,
+    ignore_unlabeled=True,
+    cn_frac_threshold=None,
+    augment=None,
+    n_batches='auto',
+    verbose=True,
+)
+Docstring:
+Compile combined connectivity vector and calculate distance matrix.
+
+Parameters
+----------
+join :      "inner" | "outer" | "existing"
+            How to combine the dataset connectivity vectors:
+              - "existing" (default) will check if a label exists in
+                theory and use it even if it's not present in the
+                connectivity vectors of all datasets
+              - "inner" will get the intersection of all labels across
+                the connectivity vectors
+              - "outer" will use all available labels
+            Note: if you are using a GraphMapper, you should use "outer"
+            as the mapper will already have filtered out non-matching
+            labels.
+metric :    "cosine" | "Euclidean"
+            Metric to use for distance calculations.
+mapper :    cocoa.Mapper | dict
+            The mapper used to match neuron labels across datasets.
+            Examples are `cocoa.GraphMapper` and `cocoa.SimpleMapper`.
+            See the mapper's documentation for more information.
+            Alternatively, you can also provide a dictionary that maps
+            IDs to labels.
+exclude_labels : str | list of str, optional
+            If provided will exclude given labels from the observation
+            vector. This uses regex!
+[...]
+```
+
+Please also see the notebooks in [examples/](examples/) for more examples.
