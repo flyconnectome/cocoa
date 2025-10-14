@@ -8,6 +8,7 @@ import networkx as nx
 from functools import lru_cache
 from pathlib import Path
 from fafbseg import flywire
+from requests.exceptions import HTTPError
 
 from .core import DataSet
 from .scenes import FLYWIRE_MINIMAL_SCENE, FLYWIRE_FLAT_MINIMAL_SCENE
