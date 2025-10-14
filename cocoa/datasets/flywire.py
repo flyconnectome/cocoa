@@ -68,7 +68,8 @@ def check_filename_mat(mat, filename):
 class FlyWire(DataSet):
     """FlyWire dataset.
 
-    Uses type annotations from Schlegel et al., bioRxiv (2023).
+    Uses type annotations from Schlegel et al., Nature (2024) and
+    Berg et al., bioRxiv (2025). See https://github.com/flyconnectome/flywire_annotations.
 
     Parameters
     ----------
