@@ -113,8 +113,14 @@ That may be enough in cases where you don't need fine-grained control.
 
 ## Documentation
 
-`cocoa` does not yet have a dedicated documentation but all functions/classes have
-extensive docstrings:
+`cocoa` does not yet have a dedicated documentation but we provide a number of
+[examples/](examples/) that show how to use the library for various tasks:
+
+- `0_flywire_hemibrain_FC1-3.ipynb`: demonstrates co-clustering for a small group of neurons, including visualization of the results
+- `1_malecns_flywire_mapping.ipynb`: show how to use `cocoa` to generate mappings between neurons from different datasets
+- `2_malecns_flywire_optic_lobes.ipynb`: demonstrates a large-scale (~160k neurons) co-clustering between two datasets
+
+In addition,all functions/classes have extensive docstrings:
 
 ```python
 >>> help(cc.Clustering.compile)
@@ -161,5 +167,3 @@ exclude_labels : str | list of str, optional
             vector. This uses regex!
 [...]
 ```
-
-Please also see the notebooks in [examples/](examples/) for more examples.
