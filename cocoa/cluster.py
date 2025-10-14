@@ -57,9 +57,10 @@ class Clustering:
 
     Parameters
     ----------
-    datasets :  DataSet | list of DataSet, optional
+    *datasets : DataSet | list of DataSet, optional
                 One or more datasets to include in the clustering.
-                Alternatively, datasets can be added using the `add_dataset`.
+                Alternatively, datasets can be added using the
+                `add_dataset`.
 
     """
 
@@ -170,10 +171,7 @@ class Clustering:
         # Check if we can re-use a condensed vector-form distance matrix
         s = getattr(self, "dists_vect_", squareform(self.dists_.values, checks=False))
 
-        return linkage(
-            s,
-            method=method
-        )
+        return linkage(s, method=method)
 
     def compile(
         self,
@@ -187,6 +185,7 @@ class Clustering:
         cn_frac_threshold=None,
         augment=None,
         n_batches="auto",
+        skip_distance=False,
         verbose=True,
     ):
         """Compile combined connectivity vector and calculate distance matrix.
@@ -231,10 +230,20 @@ class Clustering:
         n_batches : int | "auto"
                     Number of batches to use for distance calculation. If "auto"
                     will use 1 batch per 100k neurons.
+        skip_distance : bool
+                    If True, will skip distance calculation. This is useful if
+                    you just want to generate the combined connectivity vector
+                    (available as `self.vect_`).
 
         Returns
         -------
         self
+                    After compilation the Clustering will have the following
+                    additional attributes:
+                     - `self.vect_`: the combined connectivity vector
+                     - `self.vect_sources_`: the dataset each neuron comes from
+                     - `self.vect_labels_`: the label of each neuron
+                     - `self.dists_`: the distance matrix (unless `skip_distance=True`)
 
         """
         if len(self) <= 1:
@@ -255,7 +264,9 @@ class Clustering:
 
         all_ids = np.concatenate([ds.neurons for ds in self.datasets])
         if len(all_ids) > len(list(set(all_ids))):
-            print("Warning: clustering contains non-unique IDs! Please be mindful of that when working with the results.")
+            print(
+                "Warning: clustering contains non-unique IDs! Please be mindful of that when working with the results."
+            )
 
         # First compile datasets if necessary
         for i, ds in enumerate(self.datasets):
@@ -267,7 +278,7 @@ class Clustering:
             ):
                 printv(
                     f'Compiling connectivity vector for "{ds.label}" '
-                    f"({ds.type}) [{i+1}/{len(self.datasets)}]",
+                    f"({ds.type}) [{i + 1}/{len(self.datasets)}]",
                     verbose=verbose,
                 )
                 _ot = ds.use_types
@@ -468,18 +479,22 @@ class Clustering:
             self.vect_labels_ = self.vect_labels_[keep]
 
         # Calculate distances
-        self.dists_ = calculate_distance(
-            self.vect_,
-            augment=augment,
-            metric=metric,
-            verbose=verbose,
-            n_batches=(self.vect_.shape[0] // 100000 + 1)
-            if n_batches == "auto"  # Start batching after 100k neurons
-            else n_batches,
-        )
-        self.dists_.columns = [
-            f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
-        ]
+        if skip_distance:
+            printv("Skipping distance calculation.", verbose=verbose)
+            self.dists_ = None
+        else:
+            self.dists_ = calculate_distance(
+                self.vect_,
+                augment=augment,
+                metric=metric,
+                verbose=verbose,
+                n_batches=(self.vect_.shape[0] // 100000 + 1)
+                if n_batches == "auto"  # Start batching after 100k neurons
+                else n_batches,
+            )
+            self.dists_.columns = [
+                f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
+            ]
 
         printv("All done.", verbose=verbose)
         return self
@@ -538,8 +553,15 @@ class Clustering:
         # Add labels
         labels = {}
         for ds in self.datasets:
-            labels.update({(i, ds.label): l for i, l in zip(ds.neurons, ds.get_labels(ds.neurons))})
-        table["label"] = [labels.get((i, s), i) for i, s in zip(table.id, table.dataset)]
+            labels.update(
+                {
+                    (i, ds.label): l
+                    for i, l in zip(ds.neurons, ds.get_labels(ds.neurons))
+                }
+            )
+        table["label"] = [
+            labels.get((i, s), i) for i, s in zip(table.id, table.dataset)
+        ]
 
         # Neurons without an actual type will show up with their own ID as label
         # Here we set these to None
@@ -558,8 +580,7 @@ class Clustering:
         if clusters is not None:
             if not isinstance(clusters, (np.ndarray, list)):
                 raise TypeError(
-                    "Expected `clusters` to be list or array, got "
-                    f'"{type(clusters)}".'
+                    f'Expected `clusters` to be list or array, got "{type(clusters)}".'
                 )
             clusters = np.asarray(clusters)
             if clusters.ndim != 1:
@@ -665,7 +686,7 @@ class Clustering:
 
         cl = extract_homogeneous_clusters(
             self.dists_,
-            self.vect_sources_,
+            labels=self.vect_sources_,
             eval_func=eval_func,
             link_method=link_method,
             max_dist=max_dist,
@@ -883,6 +904,62 @@ class Clustering:
         return cm
 
     @req_compile
+    def plot_umap(self, ax=None, umap_kwargs=None, **kwargs):
+        """Plot neurons as a UMAP scatter plot using the connectivity distances.
+
+        Requires the `umap-learn` package to be installed::
+
+            pip install umap-learn
+
+        Parameters
+        ----------
+        ax :            matplotlib Ax, optional
+                        If provided, will plot on this axis.
+        umap_kwargs :   dict, optional
+                        A dictionary of keyword arguments passed to UMAP's
+                        constructor.
+        **kwargs
+                        Keyword arguments are passed to the scatter function.
+
+        Returns
+        -------
+        ax :            matplotlib Ax
+                        The axis containing the plot.
+        xy :            np.ndarray
+                        The 2D coordinates of each neuron. Will match
+                        the order in `Clustering.dists_`.
+
+        """
+        try:
+            import umap
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError("Please install `umap-learn` to use this method")
+
+        defaults = dict(metric="precomputed", random_state=42)
+
+        if umap_kwargs is not None:
+            defaults.update(umap_kwargs)
+
+        if defaults.get("random_state") is not None and "n_jobs" not in defaults:
+            defaults["n_jobs"] = 1  # avoids warning about multiple threads
+
+        umap_model = umap.UMAP(**defaults)
+        xy = umap_model.fit_transform(self.dists_)
+
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        sc = ax.scatter(xy[:, 0], xy[:, 1], **kwargs)
+
+        ax.set_xlabel("UMAP 1")
+        ax.set_ylabel("UMAP 2")
+
+        sns.despine(trim=True)
+        plt.tight_layout()
+
+        return ax, xy
+
+    @req_compile
     def plot_cn_frac(self, split=True, bins=None):
         """Plot fraction of connectivity used.
 
@@ -984,7 +1061,7 @@ class Clustering:
         to_drop = (cl.cn_frac_.fillna(0) <= threshold).values
 
         print(
-            f"Dropping {to_drop.sum():,} ({to_drop.sum()/to_drop.shape[0]:.1%}) "
+            f"Dropping {to_drop.sum():,} ({to_drop.sum() / to_drop.shape[0]:.1%}) "
             "neurons from the clustering.",
             flush=True,
         )
