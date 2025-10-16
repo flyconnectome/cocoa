@@ -12,6 +12,7 @@ from .ds_utils import (
     _get_hemibrain_types,
     _get_hb_sides,
     _add_types,
+    _parse_neuprint_roi,
 )
 from ..utils import collapse_neuron_nodes
 
@@ -20,6 +21,8 @@ __all__ = ["Hemibrain"]
 
 class Hemibrain(JaneliaDataSet):
     """Hemibrain dataset.
+
+    See https://neuprint.janelia.org/?dataset=hemibrain%3Av1.2.1&qt=findneurons for more information.
 
     Parameters
     ----------
@@ -39,13 +42,11 @@ class Hemibrain(JaneliaDataSet):
     exclude_queries :  bool
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
-    live_annot :    bool
-                    If False (default), will download (and cache) annotations
-                    from the Schlegel et al. data repo at
-                    https://github.com/flyconnectome/flywire_annotations. If
-                    True, will pull from a table where we stage annotations
-                    - this requires special permissions and is for internal use
-                    only.
+    meta_source :   "github" | "flytable"
+                    Source for annotations. If "github" (default), will download (and cache)
+                    annotations from https://github.com/flyconnectome/flywire_annotations.
+                    The "flytable" option is for internal use only and requires special
+                    permissions.
     cn_object :     str | pd.DataFrame
                     Either a DataFrame or path to a `.feather` connectivity file which
                     will be loaded into a DataFrame. The DataFrame is expected to
@@ -57,6 +58,7 @@ class Hemibrain(JaneliaDataSet):
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE
     _flybrains_space = "JRCFIB2018Fraw"
     _type_columns = ["type", "morphology_type"]
+    _type_columns = ["type", "morphology_type", "morphologyType"]
 
     def __init__(
         self,
@@ -66,62 +68,31 @@ class Hemibrain(JaneliaDataSet):
         use_types=False,
         use_sides=False,
         exclude_queries=False,
-        live_annot=False,
+        meta_source="github",
         cn_object=None,
+        rois=None,
     ):
         assert use_sides in (True, False, "relative")
+        assert meta_source in ("github", "flytable"), "`meta_source` must be 'github' or 'flytable'"
         super().__init__(label=label)
         self.upstream = upstream
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
-        self.live_annot = live_annot
+        self.meta_source = meta_source
         self.cn_object = cn_object
+        self.rois = rois
 
-    def _add_neurons(self, x, exact=False, sides=("left", "right")):
-        """Turn `x` into hemibrain body IDs."""
-        if isinstance(x, type(None)):
-            return np.array([], dtype=np.int64)
+    @property
+    def rois(self):
+        return getattr(self, "_rois", None)
 
-        if isinstance(x, pd.Series):
-            x = x.values
-
-        if isinstance(x, str) and "," in x:
-            x = x.split(",")
-
-        if isinstance(x, (list, np.ndarray, set, tuple)):
-            ids = np.array([], dtype=np.int64)
-            for t in x:
-                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
-        elif _is_int(x):
-            ids = [int(x)]
-        else:
-            annot = self.get_annotations()
-
-            if ":" not in x:
-                if exact:
-                    filt = (annot.type == x) | (annot.morphology_type == x)
-                else:
-                    filt = annot.type.str.contains(
-                        x, na=False
-                    ) | annot.morphology_type.str.contains(x, na=False, case=False)
-            else:
-                # If this is e.g. "type:L1-5"
-                col, val = x.split(":")
-                if exact:
-                    filt = annot[col] == val
-                else:
-                    filt = annot[col].str.contains(val, na=False, case=False)
-
-            if isinstance(sides, str):
-                filt = filt & (annot.side == sides)
-            elif isinstance(sides, (tuple, list, np.ndarray)):
-                filt = filt & annot.side.isin(sides)
-
-            ids = annot.loc[filt, "bodyId"].values.astype(np.int64).tolist()
-
-        return np.unique(np.array(ids, dtype=np.int64))
+    @rois.setter
+    def rois(self, value):
+        if value is not None:
+            value = _parse_neuprint_roi(value, client=self.neuprint_client)
+        self._rois = value
 
     @property
     def neuprint_client(self):
@@ -171,13 +142,13 @@ class Hemibrain(JaneliaDataSet):
         x.use_types = self.use_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
-        x.live_annot = self.live_annot
+        x.meta_source = self.meta_source
         x.cn_object = self.cn_object
 
         return x
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_hemibrain_meta.cache_clear()
         _get_hemibrain_types.cache_clear()
         _get_hb_sides.cache_clear()
@@ -185,7 +156,7 @@ class Hemibrain(JaneliaDataSet):
 
     def get_annotations(self):
         """Return annotations."""
-        return _get_hemibrain_meta(live=self.live_annot).copy()
+        return _get_hemibrain_meta(live=self.meta_source == "flytable").copy()
 
     def get_all_neurons(self):
         """Get a list of all neurons in this dataset."""
@@ -201,7 +172,7 @@ class Hemibrain(JaneliaDataSet):
 
         """
         # Fetch all types for this version
-        types = _get_hemibrain_types(add_side=False, live=self.live_annot)
+        types = _get_hemibrain_types(add_side=False, live=self.meta_source == "flytable")
 
         if x is None:
             return types
@@ -222,7 +193,7 @@ class Hemibrain(JaneliaDataSet):
 
         """
         # Fetch all sides for this version
-        sides = _get_hb_sides(live=self.live_annot)
+        sides = _get_hb_sides(live=self.meta_source == "flytable")
 
         if x is None:
             return sides
@@ -300,12 +271,17 @@ class Hemibrain(JaneliaDataSet):
 
             G.add_edges_from(zip(types.bodyId, types[col]))
 
+            # Track which column(s) this label came from
+            nx.set_edge_attributes(
+                G, {e: {col: True} for e in zip(types.bodyId, types[col])}
+            )
+
         if collapse_neurons:
             G = collapse_neuron_nodes(G)
 
         return G
 
-    def compile(self):
+    def compile(self, collapse_types=False, collapse_rois=True):
         """Compile connectivity vector."""
         client = self.neuprint_client
 
@@ -319,23 +295,36 @@ class Hemibrain(JaneliaDataSet):
             if hasattr(self, "types_"):
                 types = self.types_
             else:
-                types = _get_hemibrain_types(add_side=False, live=self.live_annot)
+                types = _get_hemibrain_types(add_side=False, live=self.meta_source == "flytable")
             # For cases where {'AVLP123': 'AVLP123,AVLP323'} we need to change
             # # {bodyId: 'AVLP123'} -> {bodyId: 'AVLP123,AVLP323'}
             # types = {k: collapse_types.get(v, v) for k, v in types.items()}
             # For cases where {12345: '12345,56788'} (i.e. new types)
             # types.update(collapse_types)
 
-        # Fetch hemibrain vectors
+        # Fetch connectivity vectors
         if self.upstream:
-            _, us = neu.fetch_adjacencies(
-                targets=neu.NeuronCriteria(bodyId=x, client=client), client=client
-            )
+            # print("Fetching upstream connectivity... ", end="", flush=True)
+            if isinstance(self.cn_object, pd.DataFrame):
+                us = self.cn_object[self.cn_object.bodyId_post.isin(x)]
+                if self.rois is not None:
+                    us = us[us.roi.isin(self.rois)]
+                us = us.copy()  # avoid SettingWithCopyWarning
+            else:
+                _, us = neu.fetch_adjacencies(
+                    targets=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client,
+                )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
             us.rename(
                 {"bodyId_pre": "pre", "bodyId_post": "post"}, axis=1, inplace=True
             )
+            # Collapse ROIs here before we (potentially) add types
+            if collapse_rois:
+                us = us.groupby(["pre", "post"], as_index=False).weight.sum()
+
             if self.use_types:
                 us = _add_types(
                     us,
@@ -343,14 +332,22 @@ class Hemibrain(JaneliaDataSet):
                     col="pre",
                     sides=None
                     if not self.use_sides
-                    else _get_hb_sides(live=self.live_annot),
+                    else _get_hb_sides(live=self.meta_source == "flytable"),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
         if self.downstream:
-            _, ds = neu.fetch_adjacencies(
-                sources=neu.NeuronCriteria(bodyId=x, client=client), client=client
-            )
+            if isinstance(self.cn_object, pd.DataFrame):
+                ds = self.cn_object[self.cn_object.bodyId_pre.isin(x)]
+                if self.rois is not None:
+                    ds = ds[ds.roi.isin(self.rois)]
+                ds = ds.copy()  # avoid SettingWithCopyWarning
+            else:
+                _, ds = neu.fetch_adjacencies(
+                    sources=neu.NeuronCriteria(bodyId=x, client=client),
+                    rois=self.rois,
+                    client=client,
+                )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]
             ds.rename(
@@ -363,7 +360,7 @@ class Hemibrain(JaneliaDataSet):
                     col="post",
                     sides=None
                     if not self.use_sides
-                    else _get_hb_sides(live=self.live_annot),
+                    else _get_hb_sides(live=self.meta_source == "flytable"),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -381,6 +378,11 @@ class Hemibrain(JaneliaDataSet):
             self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
         else:
             raise ValueError("`upstream` and `downstream` must not both be False")
+
+        if collapse_types:
+            # Make sure to keep "roi" if it still exits
+            cols = [c for c in ["pre", "post", "roi"] if c in self.edges_.columns]
+            self.edges_ = self.edges_.groupby(cols, as_index=False).weight.sum()
 
         # Keep track of whether this used types and side
         self.edges_types_used_ = self.use_types

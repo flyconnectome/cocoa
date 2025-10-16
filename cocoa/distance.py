@@ -76,11 +76,12 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
         printv("Done.", verbose=verbose)
 
     # Change columns to "type, ds" (index remains just "id")
-    dists = pd.DataFrame(
-        dists,
-        index=vect.index,
-        columns=vect.index,
-    )
+    if isinstance(vect, pd.DataFrame):
+        dists = pd.DataFrame(
+            dists,
+            index=vect.index,
+            columns=vect.index,
+        )
 
     if augment is not None:
         miss = dists.index[~np.isin(dists.index, augment.index)]

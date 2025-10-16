@@ -1,3 +1,4 @@
+import re
 import copy
 
 import numpy as np
@@ -7,6 +8,7 @@ import networkx as nx
 from functools import lru_cache
 from pathlib import Path
 from fafbseg import flywire
+from requests.exceptions import HTTPError
 
 from .core import DataSet
 from .scenes import FLYWIRE_MINIMAL_SCENE, FLYWIRE_FLAT_MINIMAL_SCENE
@@ -17,10 +19,13 @@ from .ds_utils import (
     _load_static_flywire_annotations,
     _get_fw_sides,
     _is_int,
+    _find_column,
 )
 from ..utils import collapse_neuron_nodes
 
 __all__ = ["FlyWire"]
+
+_DEFAULT_NEUROGLANCER_SOURCE = "precomputed://gs://flywire_v141_m783"
 
 # Neurons with cell bodies in the central brain
 CENTRAL_BRAIN_SUPER_CLASSES = (
@@ -61,9 +66,9 @@ def check_filename_mat(mat, filename):
 
 
 class FlyWire(DataSet):
-    """FlyWire dataset.
+    """FlyWire brain dataset.
 
-    Uses type annotations from Schlegel et al., bioRxiv (2023).
+    See https://codex.flywire.ai for more information.
 
     Parameters
     ----------
@@ -84,24 +89,24 @@ class FlyWire(DataSet):
     exclude_queries :  bool
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
-    cn_file :       str, optional
-                    Filepath to one of the connectivity dumps. Using this is
-                    faster than querying the CAVE backend for connectivity.
-    live_annot :    bool
-                    If False (default), will download (and cache) annotations
-                    from the Schlegel et al. data repo at
-                    https://github.com/flyconnectome/flywire_annotations. If
-                    True, will pull from a table where we stage annotations
-                    - this requires special permissions and is for internal use
-                    only.
+    meta_source :   "github" | "flytable"
+                    Source for annotations. If "github" (default), will download (and cache)
+                    annotations from https://github.com/flyconnectome/flywire_annotations.
+                    The "flytable" option is for internal use only and requires special
+                    permissions.
+    cn_object :     str | pd.DataFrame
+                    Either a DataFrame or path to a `.feather` connectivity file which
+                    will be loaded into a DataFrame. The DataFrame is expected to
+                    contain "pre_pt_root_id", "post_pt_root_id" and "syn_count" columns.
     materialization : int | "live"
-                    Which materialization to use. If `cn_file` is provided,
-                    must match that materialization version.
+                    Which materialization to use when fetching connectivity data. If
+                    `cn_object` is provided, must match that materialization version.
 
     """
 
     _flybrains_space = "FLYWIRE"
     _roi_col = "neuropil"
+    _color = "magenta"
 
     def __init__(
         self,
@@ -111,34 +116,54 @@ class FlyWire(DataSet):
         use_types=False,
         use_sides=False,
         exclude_queries=False,
-        cn_file=None,
-        live_annot=False,
+        meta_source="github",
+        cn_object=None,
         materialization=783,
     ):
         assert use_sides in (True, False, "relative")
+        assert meta_source in ("github", "flytable"), "`meta_source` must be 'github' or 'flytable'"
         super().__init__(label=label)
-        self.cn_file = cn_file
+        self.materialization = materialization  # must be set before `cn_object`
+        self.cn_object = cn_object
         self.upstream = upstream
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
-        self.live_annot = live_annot
-        self.materialization = materialization
+        self.meta_source = meta_source
+        self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
-        if self.cn_file is not None:
-            self.cn_file = Path(self.cn_file).expanduser()
-            if not self.cn_file.is_file():
-                raise ValueError(f'"{self.cn_file}" is not a valid file')
-            check_filename_mat(self.materialization, self.cn_file)
+    def add_neurons(self, x, regex="auto", sides=None):
+        """Add neurons to dataset.
 
-    def _add_neurons(self, x, exact=True, sides=None):
-        """Turn `x` into FlyWire root IDs."""
+        Parameters
+        ----------
+        x :         int | str | list | np.ndarray | pd.Series | None
+                    Root IDs or cell types to add. Can also use "{column}:{value}" to filter
+                    for values in given column.
+        regex :     "auto" | bool
+                    Whether strings are interpreted as regular expressions.
+                    If "auto" (default), will treat strings starting with "/" as regex.
+        sides :     str | iterable | None
+                    If provided, will only add neurons on the given side(s).
+
+        """
+        new_neurons = self._parse_ids(x, regex=regex, sides=sides)
+
+        if len(new_neurons):
+            self.neurons = np.unique(np.append(self.neurons, new_neurons))
+        else:
+            print(f'Warning: No neurons found for query "{x}"')
+        return self
+
+    def _parse_ids(self, x, regex="auto", sides=None):
+        """Parse `x` into FlyWire root IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
-        if not exact and isinstance(x, str) and "," in x:
-            x = x.split(",")
+        if regex == "auto" and isinstance(x, str):
+            regex = x.startswith("/")
+            x = x[1:] if regex else x
 
         if isinstance(x, pd.Series):
             x = x.values
@@ -146,14 +171,14 @@ class FlyWire(DataSet):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(ids, self._add_neurons(t, exact=exact, sides=sides))
+                ids = np.append(ids, self._parse_ids(t, regex=regex, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
             annot = self.get_annotations()
 
             if ":" not in x:
-                if exact:
+                if not regex:
                     filt = (annot.cell_type == x) | (annot.hemibrain_type == x)
                 else:
                     filt = annot.cell_type.str.contains(
@@ -162,7 +187,7 @@ class FlyWire(DataSet):
             else:
                 # If this is e.g. "cell_class:L1-5"
                 col, val = x.split(":")
-                if exact:
+                if not regex:
                     filt = annot[col] == val
                 else:
                     filt = annot[col].str.contains(val, na=False)
@@ -173,7 +198,7 @@ class FlyWire(DataSet):
                 filt = filt & annot.side.isin(sides)
             ids = annot.loc[filt, "root_id"].unique().astype(np.int64).tolist()
 
-        return np.unique(np.array(ids, dtype=np.int64))
+        return ids
 
     @classmethod
     def hemisphere(cls, hemisphere, label=None, **kwargs):
@@ -215,20 +240,71 @@ class FlyWire(DataSet):
         """Make copy of dataset."""
         x = type(self)(label=self.label)
         x.neurons = self.neurons.copy()
-        x.cn_file = self.cn_file
+        x.cn_object = self.cn_object
         x.upstream = self.upstream
         x.downstream = self.downstream
         x.use_types = self.use_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
-        x.live_annot = self.live_annot
+        x.meta_source = self.meta_source
         x.materialization = self.materialization
 
         return x
 
+    @property
+    def cn_object(self):
+        """Return the connectivity object."""
+        # Lazy-load the connectivity object if it is a file path
+        if isinstance(self._cn_object, Path):
+            self.cn_object = pd.read_feather(self._cn_object).rename(
+                {
+                    "pre_pt_root_id": "pre",
+                    "post_pt_root_id": "post",
+                    "syn_count": "weight",
+                    "neuropil": "roi",
+                },
+                axis=1,
+            )
+        return self._cn_object
+
+    @cn_object.setter
+    def cn_object(self, value):
+        """Set the connectivity object."""
+        if value is None:
+            self._cn_object = None
+        elif isinstance(value, pd.DataFrame):
+            for cols in (
+                ("pre_pt_root_id", "pre_root_id", "pre"),
+                ("post_pt_root_id", "post_root_id", "post"),
+                ("syn_count", "weight"),
+            ):
+                if not any(c in value.columns for c in cols):
+                    raise ValueError(
+                        f"DataFrame must contain at least one of the columns: {', '.join(cols)}"
+                    )
+            self._cn_object = value.rename(
+                {
+                    "pre_pt_root_id": "pre",
+                    "post_pt_root_id": "post",
+                    "pre_root_id": "pre",
+                    "post_root_id": "post",
+                    "syn_count": "weight",
+                    "neuropil": "roi",
+                },
+                axis=1,
+            )
+        elif isinstance(value, (str, Path)):
+            self._cn_object = Path(value).expanduser()
+            if not self._cn_object.is_file():
+                raise ValueError(f'"{self._cn_object}" is not a valid file')
+            if getattr(self, "materialization", None):
+                check_filename_mat(self.materialization, self._cn_object)
+        else:
+            raise ValueError("`cn_object` must be a DataFrame, a file path or None.")
+
     def get_annotations(self):
         """Return annotations."""
-        if self.live_annot:
+        if self.meta_source == "flytable":
             return _load_live_flywire_annotations(mat=self.materialization).copy()
         else:
             return _load_static_flywire_annotations(mat=self.materialization).copy()
@@ -245,7 +321,9 @@ class FlyWire(DataSet):
         x :         int | list | np.ndarray | None
                     Root IDs to fetch labels for. If `None`, will return all labels.
         """
-        types = _get_fw_types(live=self.live_annot, mat=self.materialization)
+        types = _get_fw_types(
+            live=self.meta_source == "flytable", mat=self.materialization
+        )
 
         if x is None:
             return types
@@ -264,7 +342,9 @@ class FlyWire(DataSet):
         x :         int | list | np.ndarray | None
                     Root IDs to fetch sides for. If `None`, will return all labels.
         """
-        sides = _get_fw_sides(live=self.live_annot, mat=self.materialization)
+        sides = _get_fw_sides(
+            live=self.meta_source == "flytable", mat=self.materialization
+        )
 
         if x is None:
             return sides
@@ -274,6 +354,7 @@ class FlyWire(DataSet):
         x = np.asarray(x).astype(np.int64)
 
         return np.array([sides.get(i, i) for i in x])
+
     def get_ngl_scene(self, flat=False, open=False):
         """Return a minimal neuroglancer scene for this dataset.
 
@@ -305,7 +386,7 @@ class FlyWire(DataSet):
         return np.isin(x, list(G.nodes))
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _load_live_flywire_annotations.cache_clear()
         _load_static_flywire_annotations.cache_clear()
         _get_fw_sides.cache_clear()
@@ -360,7 +441,9 @@ class FlyWire(DataSet):
                 ("cell_type", "hemibrain_type", "malecns_type"),
                 ("flywire", "hemibrain", "malecns"),
             ):
-                if col not in ann.columns:
+                # Map column to the correct column in the annotation
+                col = _find_column(col, ann)
+                if not col:
                     continue
                 notnull = ann[col].notnull()
                 ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
@@ -372,15 +455,21 @@ class FlyWire(DataSet):
         G.add_nodes_from(ann.root_id, type="neuron")
 
         # Order of labels
-        cols = ["malecns_type", "cell_type", "hemibrain_type"]
+        cols = ("malecns_type", "cell_type", "hemibrain_type")
         for col in cols:
+            # Map column to the correct column in the annotation
+            col = _find_column(col, ann)
             # Skip if this column doesn't exist
-            if col not in ann.columns:
+            if not col:
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]
             # Add edges
             G.add_edges_from(zip(this.root_id, this[col]))
+            # Track which column(s) this label came from
+            nx.set_edge_attributes(
+                G, {e: {col: True} for e in zip(this.root_id, this[col])}
+            )
 
             # Take care of compound types
             comp = this[
@@ -392,8 +481,14 @@ class FlyWire(DataSet):
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):
+                # We have to avoid splitting e.g. "P1_17a,b" in "P1_17a" and "b"
+                # If any of the split labels is just a single letter, we'll skip it
+                if any(len(s.strip()) == 1 for s in c.split(",")):
+                    continue
+
                 for c2 in c.split(","):
                     G.add_edge(c.strip(), c2.strip(), weight=count)
+                    nx.set_edge_attributes(G, {(c.strip(), c2.strip()): {col: True}})
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
@@ -416,24 +511,23 @@ class FlyWire(DataSet):
             mat = self.materialization
             timestamp = None if mat == "live" else f"mat_{mat}"
 
-            il = flywire.is_latest_root(x, timestamp=timestamp)
-            if any(~il):
-                raise ValueError(
-                    "Some of the root IDs does not exist for the specified "
-                    f"materialization ({mat}): {x[~il]}"
+            try:
+                il = flywire.is_latest_root(x, timestamp=timestamp)
+
+                if any(~il):
+                    raise ValueError(
+                        "Some of the root IDs does not exist for the specified "
+                        f"materialization ({mat}): {x[~il]}"
+                    )
+            except HTTPError:
+                print(
+                    f"Unable to check if IDs are valid for materialization {mat}. CAVE down?"
                 )
 
-        if self.cn_file is not None:
-            cn = pd.read_feather(self.cn_file).rename(
-                {
-                    "pre_pt_root_id": "pre",
-                    "post_pt_root_id": "post",
-                    "syn_count": "weight",
-                    "neuropil": "roi",
-                },
-                axis=1,
-            )
-            adj = cn[cn.pre.isin(x) & cn.post.isin(x)]
+        if self.cn_object is not None:
+            adj = self.cn_object[
+                self.cn_object.pre.isin(x) & self.cn_object.post.isin(x)
+            ]
         else:
             adj = flywire.get_adjacency(
                 sources=x,
@@ -454,9 +548,11 @@ class FlyWire(DataSet):
             if hasattr(self, "types_"):
                 fw_types = self.types_
             else:
-                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+                fw_types = _get_fw_types(
+                    mat, add_side=False, live=self.meta_source == "flytable"
+                )
 
-            fw_sides = _get_fw_sides(mat, live=self.live_annot)
+            fw_sides = _get_fw_sides(mat, live=self.meta_source == "flytable")
 
             adj = _add_types(
                 adj,
@@ -495,23 +591,21 @@ class FlyWire(DataSet):
             mat = self.materialization
             timestamp = None if mat == "live" else f"mat_{mat}"
 
-            il = flywire.is_latest_root(x, timestamp=timestamp)
-            if any(~il):
-                raise ValueError(
-                    "Some of the root IDs does not exist for the specified "
-                    f"materialization ({mat}): {x[~il]}"
+            try:
+                il = flywire.is_latest_root(x, timestamp=timestamp)
+                if any(~il):
+                    raise ValueError(
+                        "Some of the root IDs does not exist for the specified "
+                        f"materialization ({mat}): {x[~il]}"
+                    )
+            except HTTPError:
+                print(
+                    f"Unable to check if IDs are valid for materialization {mat}. CAVE down?"
                 )
 
         us, ds = None, None
-        if self.cn_file is not None:
-            cn = pd.read_feather(self.cn_file).rename(
-                {
-                    "pre_pt_root_id": "pre",
-                    "post_pt_root_id": "post",
-                    "syn_count": "weight",
-                },
-                axis=1,
-            )
+        if self.cn_object is not None:
+            cn = self.cn_object
             if self.upstream:
                 us = cn[cn.post.isin(x)]
                 us = us.groupby(["pre", "post"], as_index=False).weight.sum()
@@ -555,9 +649,11 @@ class FlyWire(DataSet):
             if hasattr(self, "types_"):
                 fw_types = self.types_
             else:
-                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+                fw_types = _get_fw_types(
+                    mat, add_side=False, live=self.meta_source == "flytable"
+                )
 
-            fw_sides = _get_fw_sides(mat, live=self.live_annot)
+            fw_sides = _get_fw_sides(mat, live=self.meta_source == "flytable")
             if self.upstream:
                 us = _add_types(
                     us,

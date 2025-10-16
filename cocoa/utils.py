@@ -7,10 +7,10 @@ import networkx as nx
 from collections.abc import Iterable
 
 
-def printv(*args, verbose=True, **kwargs):
+def printv(*args, verbose=True, flush=True, **kwargs):
     """Thin wrapper around print function."""
     if verbose:
-        print(*args, **kwargs)
+        print(*args, flush=flush, **kwargs)
 
 
 def check_frame(x, required_cols=None, dtypes=None):
@@ -34,8 +34,7 @@ def check_frame(x, required_cols=None, dtypes=None):
                 raise ValueError(f"DataFrame has to have a {c} column")
             if x[c].dtype not in types:
                 raise ValueError(
-                    f'Column {c} is expected to be of type "{types}" '
-                    f"got {x[c].dtype}"
+                    f'Column {c} is expected to be of type "{types}" got {x[c].dtype}'
                 )
 
 
@@ -71,8 +70,8 @@ def collapse_neuron_nodes(G):
     # Turn into edge list
     edges = nx.to_pandas_edgelist(G)
 
-    if 'weight' not in edges.columns:
-        edges['weight'] = 1
+    if "weight" not in edges.columns:
+        edges["weight"] = 1
     else:
         edges["weight"] = edges.weight.fillna(1).astype(int)
 
@@ -132,13 +131,9 @@ def collapse_neuron_nodes(G):
     )
 
     # Set a bunch of node attributes
-    types = {
-        f"group_{i}": "neuron" for i, group in enumerate(to_collapse) for n in group
-    }
+    types = {f"group_{i}": "neuron" for i, group in enumerate(to_collapse)}
     nx.set_node_attributes(G_grp, types, "type")
-    sizes = {
-        f"group_{i}": len(group) for i, group in enumerate(to_collapse) for n in group
-    }
+    sizes = {f"group_{i}": len(group) for i, group in enumerate(to_collapse)}
     nx.set_node_attributes(G_grp, sizes, "size")
 
     # Copy over the dataset-related attributes (e.g. "FlyWire_in" or "FlyWire": True)

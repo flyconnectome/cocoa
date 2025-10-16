@@ -16,7 +16,11 @@ class DataSet(ABC):
         return len(self.neurons)
 
     def __repr__(self):
-        return f"class {self.type} <label={self.label};neurons={len(self.neurons)}>"
+        props = f"label={self.label};neurons={len(self.neurons)}"
+        for prop in ("meta_source", ):
+            if hasattr(self, prop):
+                props += f";{prop}={getattr(self, prop)}"
+        return f"class {self.type} <{props}>"
 
     @property
     def type(self):
@@ -24,6 +28,7 @@ class DataSet(ABC):
 
     @property
     def syn_counts(self):
+        """Dictionary of synapse counts for neurons in this dataset."""
         if not hasattr(self, "edges_"):
             raise ValueError("Must first compile connectivity")
         up = (
@@ -40,25 +45,42 @@ class DataSet(ABC):
         )
         return {n: up.get(n, 0) + down.get(n, 0) for n in self.neurons}
 
+    @property
+    def neuroglancer_source(self):
+        """Neuroglancer source for this dataset."""
+        if not hasattr(self, "_neuroglancer_source"):
+            raise ValueError("No neuroglancer source defined for this dataset.")
+        return self._neuroglancer_source
+
+    @abstractmethod
     def add_neurons(self, x, **kwargs):
-        """Add neurons to dataset.
+        pass
 
-        Parameters
-        ----------
-        x :     str | int | list thereof
-                Something that can be parsed into IDs. Details depend on the
-                dataset.
+    @abstractmethod
+    def _parse_ids(self, x, **kwargs):
+        pass
 
-        """
-        new_neurons = self._add_neurons(x, **kwargs)
+    @abstractmethod
+    def get_sides(self, x):
+        pass
 
-        if not len(new_neurons):
-            print(f'No neurons matching "{x}" found.')
+    def split_sides(self):
+        """Split neurons into left and right datasets."""
+        if not len(self.neurons):
+            raise ValueError("No neurons in dataset.")
 
-        self.neurons = np.unique(
-            np.append(self.neurons, new_neurons)
-        )
-        return self
+        sides = self.get_sides(self.neurons)
+        if sides is None:
+            raise ValueError("No side information available for this dataset.")
+
+        datasets = []
+        for s in np.unique(sides):
+            ds = self.copy()
+            ds.label = f"{self.label}_{s.lower()}"
+            ds.neurons = self.neurons[sides == s]
+            datasets.append(ds)
+
+        return datasets
 
     def drop_neurons(self, x, **kwargs):
         """Drop neurons from dataset.
@@ -68,21 +90,19 @@ class DataSet(ABC):
         x :     str | int | list thereof
                 Something that can be parsed into IDs. Details depend on the
                 dataset.
+        **kwargs
+                Keyword arguments are passed to `_parse_ids`.
 
         """
         if not len(self.neurons):
             return self
 
-        to_drop = self._add_neurons(x, **kwargs)
+        to_drop = self._parse_ids(x, **kwargs)
         self.neurons = np.setdiff1d(self.neurons, to_drop)
         return self
+
     def get_ngl_scene(self):
         return NotImplementedError
-
-    @abstractmethod
-    def _add_neurons(self, x, **kwargs):
-        """Turn `x` into IDs."""
-        pass
 
     @abstractmethod
     def get_labels(self, x, **kwargs):
@@ -109,13 +129,26 @@ class DataSet(ABC):
         metric="cosine",
         force_recompile=False,
         augment=None,
-        labelled_only=True,
+        labeled_only=True,
         verbose=True,
     ):
         """Calculate cosine distance for neurons in this dataset.
 
         Parameters
-        ---------
+        ----------
+        metric :            str
+                            Distance metric to use. Default is "cosine".
+        force_recompile :   bool
+                            Whether to recompile the connectivity vector.
+        augment :           str | None
+                            Augment the connectivity vector with additional
+                            information. Default is None.
+        labeled_only :     bool
+                            Whether to only use neurons with labels. Default is
+                            True.
+        verbose :           bool
+                            Whether to print progress. Default is True.
+
         """
         if not hasattr(self, "edges_") or force_recompile:
             printv(

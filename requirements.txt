@@ -9,7 +9,6 @@ fafbseg >= 3.0.0
 requests
 dash
 dash-bootstrap-components
-fastcluster
 neuprint-python
 networkx
 tanglegram @ git+https://github.com/schlegelp/tanglegram@master

@@ -1,3 +1,4 @@
+import os
 import clio
 import requests
 
@@ -52,7 +53,7 @@ FLYWIRE_BAD_TYPES = (
     "mAL",
     "mAL1,mAL2A,mAL2B,mAL3A,mAL3B,mAL4,mAL5A,mAL5B,mAL6",
     "",
-    " "
+    " ",
 )
 
 FLYWIRE_LIVE_COLUMNS = [
@@ -61,13 +62,38 @@ FLYWIRE_LIVE_COLUMNS = [
     "supervoxel_id",
     "super_class",
     "cell_class",
+    "supertype",
     "cell_type",
     "hemibrain_type",
     "malecns_type",
     "ito_lee_hemilineage",
     "side",
+    "nerve",
     "status",
+    "dimorphism",
+    "top_nt",
+    "top_nt_conf",
+    "matching_notes",
+    "synonyms",
 ]
+
+HEMIBRAIN_LIVE_COLUMNS = [
+    "bodyId",
+    "super_class",
+    "cell_class",
+    "type",
+    "instance",
+    "side",
+    "morphology_type",
+    "cellBodyFiber",
+    "ito_lee_hemilineage",
+]
+
+CLIO_MCNS_DATASET = "CNS"
+CLIO_MANC_DATASET = "VNC"  # 'VNC' is the production dataset
+
+NEUPRINT_URL = "https://neuprint.janelia.org"
+NEUPRINT_MCNS_DATASET = "male-cns:latest"
 
 
 def download_cache_file(url, force_reload="auto", verbose=True):
@@ -118,7 +144,7 @@ def download_cache_file(url, force_reload="auto", verbose=True):
 def _load_static_flywire_annotations(mat=None, force_reload=False):
     """Download and cache FlyWire annotations from Github repo."""
     print(
-        f"Caching FlyWire annotations for materialization '{mat}'... ",
+        f"Loading FlyWire annotations for materialization '{mat}'... ",
         end="",
         flush=True,
     )
@@ -138,6 +164,11 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
             last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
             if last_mod < last_upd:
                 force_reload = True
+
+    if fp.exists() and not force_reload:
+        print("Reading cached copy... ", end="", flush=True)
+    else:
+        print("Downloading latest version... ", end="", flush=True)
 
     fp = download_cache_file(
         FLYWIRE_ANNOT_URL, force_reload=force_reload, verbose=False
@@ -187,13 +218,17 @@ def _load_live_flywire_annotations(mat=None):
     )
     info = _get_table(which="info")
     optic = _get_table(which="optic")
+    cols = FLYWIRE_LIVE_COLUMNS.copy()
+    if mat == 783:
+        cols.remove("root_id")
+        cols += ["root_783"]
     table = pd.concat(
         (
-            info.loc[info.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
-            optic.loc[optic.flow.notnull(), FLYWIRE_LIVE_COLUMNS],
+            info.loc[info.flow.notnull(), cols],
+            optic.loc[optic.flow.notnull(), cols],
         ),
         axis=0,
-    ).astype({"root_id": np.int64, "supervoxel_id": np.int64})
+    ).astype({c: np.int64 for c in ["root_id", "supervoxel_id"] if c in cols})
 
     # Keep only neurons
     table = table[table.flow.notnull()]
@@ -201,7 +236,11 @@ def _load_live_flywire_annotations(mat=None):
     # Drop duplicates
     table = table[~table.status.isin(["duplicate", "bad_nucleus"])].copy()
 
-    if mat not in ("live", "current", None):
+    if mat == 783:
+        table["root_id"] = table["root_783"].values
+        table.drop("root_783", axis=1, inplace=True)
+        table = table[table.root_id.notnull()].copy().astype({"root_id": np.int64})
+    elif mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
         to_update = ~flywire.is_latest_root(
             table.root_id, timestamp=timestamp, progress=False
@@ -267,9 +306,7 @@ def _load_live_hemibrain_annotations():
         flush=True,
     )
 
-    table = ss.Table("hb_info", "hemibrain")[
-        ["bodyId", "side", "type", "morphology_type"]
-    ]
+    table = ss.Table("hb_info", "hemibrain")[HEMIBRAIN_LIVE_COLUMNS]
     print("Done.")
 
     return table
@@ -286,61 +323,105 @@ def _get_hemibrain_meta(live=False):
 
 @lru_cache
 def _get_mcns_meta(source):
-    assert source in ("clio", "neuprint")
-    if source == "clio":
-        client = _get_clio_client("CNS")
-        ann = clio.fetch_annotations(None, client=client)
+    assert isinstance(source, str)
+    if source.startswith("clio"):
+        if "/" in source:
+            dataset = source.split("/")[-1]
+        else:
+            dataset = CLIO_MCNS_DATASET
+        client = _get_clio_client(dataset=dataset)
+        return _align_columns(clio.fetch_annotations(None, client=client))
+    elif source.startswith("neuprint"):
+        if "/" in source:
+            dataset = source.split("/")[-1]
+        else:
+            dataset = NEUPRINT_MCNS_DATASET
 
-        # Currently, Clio has both a `rootSide` and `root_side` column
-        # Only the later is really useful.
-        ann = ann.drop("rootSide", errors="ignore", axis=1)
-
-        return ann.rename(
-            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
-            axis=1,
-        )
-    else:
-        client = _get_neuprint_mcns_client()
+        dataset = _parse_neuprint_dataset(dataset)
+        client = _get_neuprint_mcns_client(dataset=dataset)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
+            omit_rois=True,
             client=client,
-        )[0]
+        )
+    else:
+        raise ValueError(f"Unknown male CNS source: {source}. ")
 
 
 @lru_cache
 def _get_manc_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
-        client = _get_clio_client("MANC")
-        ann = clio.fetch_annotations(None, client=client)
-
-        return ann.rename(
-            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
-            axis=1,
-        )
+        client = _get_clio_client(CLIO_MANC_DATASET)
+        return _align_columns(clio.fetch_annotations(None, client=client))
     else:
         client = _get_neuprint_manc_client()
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
+            omit_rois=True,
             client=client,
-        )[0]
+        )
+
+
+@lru_cache
+def _get_neuprint_datasets():
+    """Get available neuPrint datasets."""
+    token = os.environ.get("NEUPRINT_APPLICATION_CREDENTIALS")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{NEUPRINT_URL}/api/dbmeta/datasets", headers=headers)
+    r.raise_for_status()
+    return list(r.json())
+
+
+@lru_cache
+def _parse_neuprint_dataset(dataset):
+    """Find neuPrint dataset and version.
+
+    Parameters
+    ----------
+    dataset :   str
+                Can be just a name (e.g. "male-cns") in which case we will find the latest version,
+                or "name:version" (e.g. "male-cns:v0.9") or "name:latest".
+
+    """
+    if ":" in dataset:
+        dataset, version = dataset.split(":")
+    else:
+        dataset, version = dataset, "latest"
+
+    available = _get_neuprint_datasets()
+    versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
+    if not versions:
+        raise ValueError(
+            f"No neuPrint dataset matching '{dataset}' found among the available neuPrint datasets: {available}"
+        )
+
+    if version == "latest":
+        version = max(versions)
+    elif version not in versions:
+        raise ValueError(
+            f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
+        )
+
+    return f"{dataset}:{version}"
 
 
 @lru_cache
 def _get_neuprint_hemibrain_client(version="1.2.1"):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client("https://neuprint.janelia.org", dataset=f"hemibrain:v{version}")
+    return neu.Client(NEUPRINT_URL, dataset=f"hemibrain:v{version}")
 
 
 @lru_cache
-def _get_neuprint_mcns_client():
-    return neu.Client("https://neuprint-cns.janelia.org", dataset="cns")
+def _get_neuprint_mcns_client(dataset):
+    dataset = _parse_neuprint_dataset(dataset)
+    return neu.Client(NEUPRINT_URL, dataset=dataset)
 
 
 @lru_cache
 def _get_neuprint_manc_client(version="1.2.1"):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client("https://neuprint.janelia.org", dataset=f"manc:v{version}")
+    return neu.Client(NEUPRINT_URL, dataset=f"manc:v{version}")
 
 
 @lru_cache
@@ -363,17 +444,24 @@ def _get_fw_types(mat, add_side=False, live=False, exclude_bad_types=True):
     else:
         table = _load_live_flywire_annotations(mat=mat)
 
-    # Backfill types
+    # Do not modify the original table
+    table = table.copy()
+
     type_cols = ("cell_type", "malecns_type", "hemibrain_type")
+
+    # Sanitize type columns
+    if exclude_bad_types:
+        for col in type_cols:
+            if col not in table.columns:
+                continue
+            table.loc[table[col].isin(FLYWIRE_BAD_TYPES), col] = None
+
+    # Backfill types
     table["type"] = None
     for col in type_cols:
         if col in table.columns:
             table["type"] = table["type"].fillna(table[col])
     typed = table[table.type.notnull()]
-
-    # Drop some known bad types
-    if exclude_bad_types:
-        typed = typed[~typed.type.isin(FLYWIRE_BAD_TYPES)]
 
     if add_side:
         typed = typed.copy()  # Avoid SettingWithCopyWarnings
@@ -425,10 +513,6 @@ def _get_mcns_types(
                     Source of the annotations.
 
     """
-    assert source in (
-        "clio",
-        "neuprint",
-    ), f'`source` must be clio or neuprint, got "{source}"'
     print(f"Caching male CNS `type` annotations from {source}... ", end="", flush=True)
 
     # This function makes sure that columns have the same name regardless of source
@@ -477,7 +561,7 @@ def _get_manc_types(
     print(f"Caching male VNC `type` annotations from {source}... ", end="", flush=True)
 
     # This function makes sure that columns have the same name regardless of source
-    meta = _get_mcns_meta(source=source)
+    meta = _get_manc_meta(source=source)
 
     if backfill_types:
         _backfill_types(meta, backfill_types)
@@ -493,10 +577,36 @@ def _get_manc_types(
     return meta.set_index("bodyId").type.to_dict()
 
 
+def _align_columns(df):
+    """
+    Align columns between different data sources:
+
+     1. Drop empty strings (from e.g. `type` column)
+     2. Turn column names from snake_case to camelCase
+    """
+    new_col_names = {}
+    for c in df.columns:
+        df[c] = df[c].replace("", np.nan).replace(" ", np.nan)
+        if "_" in c:
+            new_col_names[c] = "".join(
+                [w.capitalize() if i > 0 else w for i, w in enumerate(c.split("_"))]
+            )
+
+    # Rename columns
+    new_col_names["bodyid"] = "bodyId"
+
+    return df.rename(
+        new_col_names,
+        axis=1,
+    )
+
+
 def _backfill_types(meta, backfill_types):
     """Backfill types from other columns."""
     for col in backfill_types:
-        if col not in meta.columns:
+        # Map column to the correct column in the annotation
+        col = _find_column(col, meta)
+        if not col:
             continue
 
         # For "group" and "instance" we need to do a bit of clean-up first
@@ -568,8 +678,8 @@ def _get_mcns_sides(source="clio", backfill_from_root=True):
         {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
     )
 
-    if backfill_from_root and 'rootSide' in meta.columns:
-        meta['side'] = meta.side.fillna(meta.rootSide)
+    if backfill_from_root and "rootSide" in meta.columns:
+        meta["side"] = meta.side.fillna(meta.rootSide)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
@@ -584,8 +694,8 @@ def _get_manc_sides(source="clio", backfill_from_root=True):
         {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
     )
 
-    if backfill_from_root and 'rootSide' in meta.columns:
-        meta['side'] = meta.side.fillna(meta.rootSide)
+    if backfill_from_root and "rootSide" in meta.columns:
+        meta["side"] = meta.side.fillna(meta.rootSide)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
@@ -805,3 +915,28 @@ def _parse_neuprint_roi(roi, client):
         rois.extend(collect_primary_rois(found))
 
     return rois
+
+
+def _find_column(col, df):
+    """Check if a column exists in a DataFrame. Accounts for both snake_case and camelCase.
+
+    If column not present, will return `False`.
+    """
+    if col in df.columns:
+        return col
+
+    # Check snake_case
+    if "_" in col:
+        alt = "".join(
+            [w.capitalize() if i > 0 else w for i, w in enumerate(col.split("_"))]
+        )
+        if alt in df.columns:
+            return alt
+
+    # Check camelCase
+    if any([c.isupper() for c in col]):
+        alt = "".join([f"_{c.lower()}" if c.isupper() else c for c in col])
+        if alt in df.columns:
+            return alt
+
+    return False

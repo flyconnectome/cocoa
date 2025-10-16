@@ -17,7 +17,9 @@ from .ds_utils import (
     _add_types,
     _get_clio_client,
     _parse_neuprint_roi,
+    _find_column,
     MCNS_BAD_TYPES,
+    NEUPRINT_MCNS_DATASET,
 )
 from ..utils import collapse_neuron_nodes
 
@@ -41,6 +43,8 @@ VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
 
 class MaleCNS(JaneliaDataSet):
     """Male CNS dataset.
+
+    See https://neuprint.janelia.org/?dataset=male-cns%3Av0.9&qt=findneurons for more information.
 
     Parameters
     ----------
@@ -68,8 +72,10 @@ class MaleCNS(JaneliaDataSet):
                         Restrict connectivity to these regions of interest. Works
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
-    meta_source :       "clio" | "neuprint"
-                        Source for meta data.
+    meta_source :       "neuprint" (default) | "clio"
+                        Source for annotations. You can also provide a specific
+                        dataset by passing e.g. "neuprint/male-cns:v0.9". If not
+                        specified, will use the latest version available.
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
@@ -82,7 +88,7 @@ class MaleCNS(JaneliaDataSet):
     """
 
     _flybrains_space = "JRCFIB2022Mraw"
-    _type_columns = ("type", "flywire_type", "manc_type")
+    _type_columns = ("type", "flywireType", "mancType", "hemibrainType")
 
     def __init__(
         self,
@@ -90,12 +96,12 @@ class MaleCNS(JaneliaDataSet):
         upstream=True,
         downstream=True,
         use_types=False,
-        backfill_types=("flywire_type", "hemibrain_type", "manc_type"),
+        backfill_types=True,
         exclude_bad_types=True,
         exclude_autapses=True,
         use_sides=False,
         rois=None,
-        meta_source="clio",
+        meta_source="neuprint",
         exclude_queries=False,
         cn_object=None,
     ):
@@ -119,7 +125,13 @@ class MaleCNS(JaneliaDataSet):
             if not backfill_types:
                 backfill_types = None
             else:
-                backfill_types = ("flywire_type", "hemibrain_type", "manc_type", "group", "instance")
+                backfill_types = (
+                    "flywire_type",
+                    "hemibrain_type",
+                    "manc_type",
+                    "group",
+                    "instance",
+                )
         elif not isinstance(backfill_types, (list, tuple)):
             raise ValueError(
                 "`backfill_types` must be a str, a list or tuple or `None`"
@@ -130,7 +142,11 @@ class MaleCNS(JaneliaDataSet):
     @property
     def neuprint_client(self):
         """Return neuprint client."""
-        return _get_neuprint_mcns_client()
+        if self.meta_source.startswith("neuprint") and "/" in self.meta_source:
+            dataset = self.meta_source.split("/")[-1]
+        else:
+            dataset = NEUPRINT_MCNS_DATASET
+        return _get_neuprint_mcns_client(dataset=dataset)
 
     @property
     def rois(self):
@@ -252,7 +268,7 @@ class MaleCNS(JaneliaDataSet):
         return x
 
     def clear_cache(self):
-        """Clear cached data (e.g. annotations)."""
+        """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_mcns_meta.cache_clear()
         _get_mcns_types.cache_clear()
         _get_mcns_meta.cache_clear()
@@ -260,14 +276,27 @@ class MaleCNS(JaneliaDataSet):
 
         return self
 
-    def get_annotations(self):
-        """Return annotations."""
-        # Clio returns a "bodyid" column, neuprint a "bodyId" column
-        ann = _get_mcns_meta(source=self.meta_source).copy()
+    def get_annotations(self, source=None, clear_cache=False):
+        """Return annotations.
 
-        # Drop empty strings (from e.g. `type` column)
-        for c in ann.columns:
-            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
+        Parameters
+        ----------
+        source :    "neuprint" | "clio"
+                    Source for annotations. If `None`, will use the default source set during
+                    dataset creation. You can provide a specific dataset by passing
+                    e.g. "neuprint/male-cns:v0.9".
+        clear_cache : bool
+                    Whether to clear the cache before fetching the data.
+
+        """
+        if source is None:
+            source = self.meta_source
+
+        if clear_cache:
+            _get_mcns_meta.cache_clear()
+
+        # Clio returns a "bodyid" column, neuprint a "bodyId" column
+        ann = _get_mcns_meta(source=source).copy()
 
         return ann
 
@@ -323,7 +352,7 @@ class MaleCNS(JaneliaDataSet):
 
     def get_ngl_scene(self, in_flywire_space=False):
         client = _get_clio_client("CNS")
-        seg_source = f'dvid://{client.meta["dvid"]}/{client.meta["uuid"]}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app'
+        seg_source = f"dvid://{client.meta['dvid']}/{client.meta['uuid']}/segmentation?dvid-service=https://ngsupport-bmcp5imp6q-uk.a.run.app"
         if not in_flywire_space:
             scene = copy.deepcopy(client.meta["neuroglancer"])
             scene.layers.append(
@@ -464,7 +493,9 @@ class MaleCNS(JaneliaDataSet):
                 ("type", "hemibrain_type", "flywire_type", "manc_type"),
                 ("malecns", "hemibrain", "flywire", "manc"),
             ):
-                if col not in ann.columns:
+                # Map column to the correct column in the annotation
+                col = _find_column(col, ann)
+                if not col:
                     continue
                 notnull = ann[col].notnull()
                 ann.loc[notnull, col] = f"{name}:" + ann.loc[notnull, col].astype(str)
@@ -481,13 +512,20 @@ class MaleCNS(JaneliaDataSet):
             cols.extend(self.backfill_types)
 
         for col in cols:
+            # Map column to the correct column in the annotation
+            col = _find_column(col, ann)
             # Skip if this column doesn't exist
-            if col not in ann.columns:
+            if not col:
                 continue
             # Get entries where this column is not null
             this = ann[ann[col].notnull()]
             # Add edges
             G.add_edges_from(zip(this.bodyId, this[col]))
+
+            # Track which column(s) this label came from
+            nx.set_edge_attributes(
+                G, {e: {col: True} for e in zip(this.bodyId, this[col])}
+            )
 
             # Take care of compound types
             comp = this[
@@ -499,8 +537,14 @@ class MaleCNS(JaneliaDataSet):
             ][col].values
 
             for c, count in zip(*np.unique(comp, return_counts=True)):
+                # We have to avoid splitting e.g. "DVMn 3a, b" into "DVMn 3a" and "b"
+                # If any of the split labels is just a single letter, we'll skip it
+                if any(len(s.strip()) == 1 for s in c.split(",")):
+                    continue
+
                 for c2 in c.split(","):
                     G.add_edge(c.strip(), c2.strip(), weight=count)
+                    nx.set_edge_attributes(G, {(c.strip(), c2.strip()): {col: True}})
 
         # For known antonyms (i.e. labels that are the same in another dataset but do not indicate matches)
         # we will use the node properties to indicate which datasets it must not be matched against.
