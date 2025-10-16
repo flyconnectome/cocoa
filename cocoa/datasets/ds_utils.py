@@ -371,41 +371,36 @@ def _get_neuprint_datasets():
 
 @lru_cache
 def _parse_neuprint_dataset(dataset):
-    available = _get_neuprint_datasets()
+    """Find neuPrint dataset and version.
+
+    Parameters
+    ----------
+    dataset :   str
+                Can be just a name (e.g. "male-cns") in which case we will find the latest version,
+                or "name:version" (e.g. "male-cns:v0.9") or "name:latest".
+
+    """
     if ":" in dataset:
-        # If dataset and version is given (e.g. "male-cns:latest" or "male-cns:v0.9")
         dataset, version = dataset.split(":")
-        versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
-        if not versions:
-            raise ValueError(
-                f"No neuPrint dataset matching '{dataset}' found in available neuPrint datasets: {available}"
-            )
-
-        if version == "latest":
-            version = max(versions)
-        elif version not in versions:
-            raise ValueError(
-                f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
-            )
-        dataset = f"{dataset}:{version}"
     else:
-        # If only dataset is given (e.g. "male-cns")
-        versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
+        dataset, version = dataset, "latest"
 
-        if not versions:
-            raise ValueError(
-                f"No neuPrint dataset matching '{dataset}' found in available neuPrint datasets: {available}"
-            )
+    available = _get_neuprint_datasets()
+    versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
+    if not versions:
+        raise ValueError(
+            f"No neuPrint dataset matching '{dataset}' found among the available neuPrint datasets: {available}"
+        )
 
-        if versions:
-            version = max(versions)
-        else:
-            raise ValueError(
-                f"Dataset '{dataset}' not found in available neuPrint datasets: {available}"
-            )
-        dataset = f"{dataset}:{version}"
+    if version == "latest":
+        version = max(versions)
+    elif version not in versions:
+        raise ValueError(
+            f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
+        )
+    dataset = f"{dataset}:{version}"
 
-    return dataset
+    return f"{dataset}:{version}"
 
 
 @lru_cache
