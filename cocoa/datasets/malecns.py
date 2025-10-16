@@ -44,6 +44,8 @@ VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
 class MaleCNS(JaneliaDataSet):
     """Male CNS dataset.
 
+    See https://neuprint.janelia.org/?dataset=male-cns%3Av0.9&qt=findneurons for more information.
+
     Parameters
     ----------
     label :             str
@@ -71,7 +73,7 @@ class MaleCNS(JaneliaDataSet):
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
     meta_source :       "neuprint" (default) | "clio"
-                        Source for meta data. You can also provide a specific
+                        Source for annotations. You can also provide a specific
                         dataset by passing e.g. "neuprint/male-cns:v0.9". If not
                         specified, will use the latest version available.
     exclude_queries :   bool

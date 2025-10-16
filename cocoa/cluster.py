@@ -949,9 +949,7 @@ class Clustering:
         if ax is None:
             fig, ax = plt.subplots()
 
-        sns.scatterplot(
-            x=xy[:, 0], y=xy[:, 1], hue=self.vect_sources_, ax=ax, **kwargs
-        )
+        sns.scatterplot(x=xy[:, 0], y=xy[:, 1], hue=self.vect_sources_, ax=ax, **kwargs)
 
         ax.set_xlabel("UMAP 1")
         ax.set_ylabel("UMAP 2")
@@ -1156,11 +1154,15 @@ def generate_clustering(
                 MaleVNC body ID(s) or cell type(s). Will automatically be split
                 into left and right. See also `split_lr` parameter.
     split_lr :  bool
-                If True, will split IDs into left and right automatically.
+                If True, will automatically divvy up neurons into separate left
+                and right datasets.
     ignore_hb_l : bool
-                If True, will ignore left hemisphere Hemibrain neurons.
+                If True (default), will ignore left hemisphere Hemibrain neurons.
     live_annot : bool
-                Whether to use live annotations. This requires access to SeatTable.
+                Whether to use live annotations for all datasets. This is equivalent
+                to setting the `meta_source` parameter of the dataset classes to
+                `flytable` or `clio`. Please note that this may require special
+                permissions!
     upstream :  bool
                 Whether to use input connectivity.
     downstream : bool
@@ -1185,7 +1187,7 @@ def generate_clustering(
 
         # Use the dataset to parse `fw` into root IDs
         fw = FlyWire(
-            live_annot=live_annot,
+            meta_source="flytable" if live_annot else "github",
             upstream=upstream,
             downstream=downstream,
             label="FW",
@@ -1199,7 +1201,7 @@ def generate_clustering(
                 fw.neurons, fw_ann[fw_ann.side == "left"].root_id.astype(int)
             )
             fw_left = FlyWire(
-                live_annot=live_annot,
+                meta_source="flytable" if live_annot else "github",
                 upstream=upstream,
                 downstream=downstream,
                 label="FwL",
@@ -1208,7 +1210,7 @@ def generate_clustering(
                 materialization=fw_materialization,
             ).add_neurons(np.array(fw.neurons)[is_left])
             fw_right = FlyWire(
-                live_annot=live_annot,
+                meta_source="flytable" if live_annot else "github",
                 upstream=upstream,
                 downstream=downstream,
                 label="FwR",
@@ -1230,7 +1232,7 @@ def generate_clustering(
 
         # Use the dataset to parse `hb` into body IDs
         hb = Hemibrain(
-            live_annot=live_annot,
+            meta_source="flytable" if live_annot else "github",
             upstream=upstream,
             downstream=downstream,
             cn_object=hemibrain_cn_object,
@@ -1247,7 +1249,7 @@ def generate_clustering(
             if any(is_left) and not ignore_hb_l:
                 datasets.append(
                     Hemibrain(
-                        live_annot=live_annot,
+                        meta_source="flytable" if live_annot else "github",
                         upstream=upstream,
                         downstream=downstream,
                         exclude_queries=exclude_queries,
@@ -1259,7 +1261,7 @@ def generate_clustering(
             if any(~is_left):
                 datasets.append(
                     Hemibrain(
-                        live_annot=live_annot,
+                        meta_source="flytable" if live_annot else "github",
                         upstream=upstream,
                         downstream=downstream,
                         exclude_queries=exclude_queries,
@@ -1276,7 +1278,10 @@ def generate_clustering(
 
         # Use the dataset to parse `mcns` into body IDs
         mcns = MaleCNS(
-            upstream=upstream, downstream=downstream, label="Mcns"
+            upstream=upstream,
+            downstream=downstream,
+            label="Mcns",
+            meta_source="clio" if live_annot else "neuprint",
         ).add_neurons(mcns)
 
         # Now split into left/right
@@ -1295,6 +1300,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="McnsL",
                 cn_object=mcns_cn_object,
+                meta_source="clio" if live_annot else "neuprint",
                 exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[is_left])
             mcns_right = MaleCNS(
@@ -1302,6 +1308,7 @@ def generate_clustering(
                 downstream=downstream,
                 label="McnsR",
                 cn_object=mcns_cn_object,
+                meta_source="clio" if live_annot else "neuprint",
                 exclude_queries=exclude_queries,
             ).add_neurons(np.array(mcns.neurons)[~is_left])
 

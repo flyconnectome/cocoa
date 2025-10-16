@@ -22,6 +22,8 @@ __all__ = ["Hemibrain"]
 class Hemibrain(JaneliaDataSet):
     """Hemibrain dataset.
 
+    See https://neuprint.janelia.org/?dataset=hemibrain%3Av1.2.1&qt=findneurons for more information.
+
     Parameters
     ----------
     label :         str
@@ -40,13 +42,11 @@ class Hemibrain(JaneliaDataSet):
     exclude_queries :  bool
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
-    live_annot :    bool
-                    If False (default), will download (and cache) annotations
-                    from the Schlegel et al. data repo at
-                    https://github.com/flyconnectome/flywire_annotations. If
-                    True, will pull from a table where we stage annotations
-                    - this requires special permissions and is for internal use
-                    only.
+    meta_source :   "github" | "flytable"
+                    Source for annotations. If "github" (default), will download (and cache)
+                    annotations from https://github.com/flyconnectome/flywire_annotations.
+                    The "flytable" option is for internal use only and requires special
+                    permissions.
     cn_object :     str | pd.DataFrame
                     Either a DataFrame or path to a `.feather` connectivity file which
                     will be loaded into a DataFrame. The DataFrame is expected to
@@ -68,18 +68,19 @@ class Hemibrain(JaneliaDataSet):
         use_types=False,
         use_sides=False,
         exclude_queries=False,
-        live_annot=False,
+        meta_source="github",
         cn_object=None,
         rois=None,
     ):
         assert use_sides in (True, False, "relative")
+        assert meta_source in ("github", "flytable"), "`meta_source` must be 'github' or 'flytable'"
         super().__init__(label=label)
         self.upstream = upstream
         self.downstream = downstream
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
-        self.live_annot = live_annot
+        self.meta_source = meta_source
         self.cn_object = cn_object
         self.rois = rois
 
@@ -141,7 +142,7 @@ class Hemibrain(JaneliaDataSet):
         x.use_types = self.use_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
-        x.live_annot = self.live_annot
+        x.meta_source = self.meta_source
         x.cn_object = self.cn_object
 
         return x
@@ -155,7 +156,7 @@ class Hemibrain(JaneliaDataSet):
 
     def get_annotations(self):
         """Return annotations."""
-        return _get_hemibrain_meta(live=self.live_annot).copy()
+        return _get_hemibrain_meta(live=self.meta_source == "flytable").copy()
 
     def get_all_neurons(self):
         """Get a list of all neurons in this dataset."""
@@ -171,7 +172,7 @@ class Hemibrain(JaneliaDataSet):
 
         """
         # Fetch all types for this version
-        types = _get_hemibrain_types(add_side=False, live=self.live_annot)
+        types = _get_hemibrain_types(add_side=False, live=self.meta_source == "flytable")
 
         if x is None:
             return types
@@ -192,7 +193,7 @@ class Hemibrain(JaneliaDataSet):
 
         """
         # Fetch all sides for this version
-        sides = _get_hb_sides(live=self.live_annot)
+        sides = _get_hb_sides(live=self.meta_source == "flytable")
 
         if x is None:
             return sides
@@ -294,7 +295,7 @@ class Hemibrain(JaneliaDataSet):
             if hasattr(self, "types_"):
                 types = self.types_
             else:
-                types = _get_hemibrain_types(add_side=False, live=self.live_annot)
+                types = _get_hemibrain_types(add_side=False, live=self.meta_source == "flytable")
             # For cases where {'AVLP123': 'AVLP123,AVLP323'} we need to change
             # # {bodyId: 'AVLP123'} -> {bodyId: 'AVLP123,AVLP323'}
             # types = {k: collapse_types.get(v, v) for k, v in types.items()}
@@ -331,7 +332,7 @@ class Hemibrain(JaneliaDataSet):
                     col="pre",
                     sides=None
                     if not self.use_sides
-                    else _get_hb_sides(live=self.live_annot),
+                    else _get_hb_sides(live=self.meta_source == "flytable"),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 
@@ -359,7 +360,7 @@ class Hemibrain(JaneliaDataSet):
                     col="post",
                     sides=None
                     if not self.use_sides
-                    else _get_hb_sides(live=self.live_annot),
+                    else _get_hb_sides(live=self.meta_source == "flytable"),
                     sides_rel=True if self.use_sides == "relative" else False,
                 )
 

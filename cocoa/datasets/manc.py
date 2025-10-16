@@ -28,6 +28,8 @@ VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
 class MaleVNC(JaneliaDataSet):
     """Male Adult Nerve Cord (MANC) dataset.
 
+    See https://neuprint.janelia.org/?dataset=manc%3Av1.2.3&qt=findneurons for more information.
+
     Parameters
     ----------
     label :             str

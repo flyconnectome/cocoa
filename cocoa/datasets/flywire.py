@@ -66,10 +66,9 @@ def check_filename_mat(mat, filename):
 
 
 class FlyWire(DataSet):
-    """FlyWire dataset.
+    """FlyWire brain dataset.
 
-    Uses type annotations from Schlegel et al., Nature (2024) and
-    Berg et al., bioRxiv (2025). See https://github.com/flyconnectome/flywire_annotations.
+    See https://codex.flywire.ai for more information.
 
     Parameters
     ----------
@@ -90,20 +89,18 @@ class FlyWire(DataSet):
     exclude_queries :  bool
                     If True (default), will exclude connections between query
                     neurons from the connectivity vector.
+    meta_source :   "github" | "flytable"
+                    Source for annotations. If "github" (default), will download (and cache)
+                    annotations from https://github.com/flyconnectome/flywire_annotations.
+                    The "flytable" option is for internal use only and requires special
+                    permissions.
     cn_object :     str | pd.DataFrame
                     Either a DataFrame or path to a `.feather` connectivity file which
                     will be loaded into a DataFrame. The DataFrame is expected to
                     contain "pre_pt_root_id", "post_pt_root_id" and "syn_count" columns.
-    live_annot :    bool
-                    If False (default), will download (and cache) annotations
-                    from the Schlegel et al. data repo at
-                    https://github.com/flyconnectome/flywire_annotations. If
-                    True, will pull from a table where we stage annotations
-                    - this requires special permissions and is for internal use
-                    only.
     materialization : int | "live"
-                    Which materialization to use. If `cn_object` is provided,
-                    must match that materialization version.
+                    Which materialization to use when fetching connectivity data. If
+                    `cn_object` is provided, must match that materialization version.
 
     """
 
@@ -119,11 +116,12 @@ class FlyWire(DataSet):
         use_types=False,
         use_sides=False,
         exclude_queries=False,
+        meta_source="github",
         cn_object=None,
-        live_annot=False,
         materialization=783,
     ):
         assert use_sides in (True, False, "relative")
+        assert meta_source in ("github", "flytable"), "`meta_source` must be 'github' or 'flytable'"
         super().__init__(label=label)
         self.materialization = materialization  # must be set before `cn_object`
         self.cn_object = cn_object
@@ -132,7 +130,7 @@ class FlyWire(DataSet):
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
-        self.live_annot = live_annot
+        self.meta_source = meta_source
         self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
     def add_neurons(self, x, regex="auto", sides=None):
@@ -248,7 +246,7 @@ class FlyWire(DataSet):
         x.use_types = self.use_types
         x.use_sides = self.use_sides
         x.exclude_queries = self.exclude_queries
-        x.live_annot = self.live_annot
+        x.meta_source = self.meta_source
         x.materialization = self.materialization
 
         return x
@@ -299,14 +297,14 @@ class FlyWire(DataSet):
             self._cn_object = Path(value).expanduser()
             if not self._cn_object.is_file():
                 raise ValueError(f'"{self._cn_object}" is not a valid file')
-            if getattr(self, 'materialization', None):
+            if getattr(self, "materialization", None):
                 check_filename_mat(self.materialization, self._cn_object)
         else:
             raise ValueError("`cn_object` must be a DataFrame, a file path or None.")
 
     def get_annotations(self):
         """Return annotations."""
-        if self.live_annot:
+        if self.meta_source == "flytable":
             return _load_live_flywire_annotations(mat=self.materialization).copy()
         else:
             return _load_static_flywire_annotations(mat=self.materialization).copy()
@@ -323,7 +321,9 @@ class FlyWire(DataSet):
         x :         int | list | np.ndarray | None
                     Root IDs to fetch labels for. If `None`, will return all labels.
         """
-        types = _get_fw_types(live=self.live_annot, mat=self.materialization)
+        types = _get_fw_types(
+            live=self.meta_source == "flytable", mat=self.materialization
+        )
 
         if x is None:
             return types
@@ -342,7 +342,9 @@ class FlyWire(DataSet):
         x :         int | list | np.ndarray | None
                     Root IDs to fetch sides for. If `None`, will return all labels.
         """
-        sides = _get_fw_sides(live=self.live_annot, mat=self.materialization)
+        sides = _get_fw_sides(
+            live=self.meta_source == "flytable", mat=self.materialization
+        )
 
         if x is None:
             return sides
@@ -523,7 +525,9 @@ class FlyWire(DataSet):
                 )
 
         if self.cn_object is not None:
-            adj = self.cn_object[self.cn_object.pre.isin(x) & self.cn_object.post.isin(x)]
+            adj = self.cn_object[
+                self.cn_object.pre.isin(x) & self.cn_object.post.isin(x)
+            ]
         else:
             adj = flywire.get_adjacency(
                 sources=x,
@@ -544,9 +548,11 @@ class FlyWire(DataSet):
             if hasattr(self, "types_"):
                 fw_types = self.types_
             else:
-                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+                fw_types = _get_fw_types(
+                    mat, add_side=False, live=self.meta_source == "flytable"
+                )
 
-            fw_sides = _get_fw_sides(mat, live=self.live_annot)
+            fw_sides = _get_fw_sides(mat, live=self.meta_source == "flytable")
 
             adj = _add_types(
                 adj,
@@ -643,9 +649,11 @@ class FlyWire(DataSet):
             if hasattr(self, "types_"):
                 fw_types = self.types_
             else:
-                fw_types = _get_fw_types(mat, add_side=False, live=self.live_annot)
+                fw_types = _get_fw_types(
+                    mat, add_side=False, live=self.meta_source == "flytable"
+                )
 
-            fw_sides = _get_fw_sides(mat, live=self.live_annot)
+            fw_sides = _get_fw_sides(mat, live=self.meta_source == "flytable")
             if self.upstream:
                 us = _add_types(
                     us,
