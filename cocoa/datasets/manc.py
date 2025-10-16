@@ -52,8 +52,10 @@ class MaleVNC(JaneliaDataSet):
                         Restrict connectivity to these regions of interest. Works
                         with super-level ROIs: e.g. "Brain" or "VNC" will be
                         automatically parsed into the appropriate sub-ROIs.
-    meta_source :       "clio" | "neuprint"
-                        Source for meta data.
+    meta_source :       "neuprint" (default) | "clio"
+                        Source for meta data. You can also provide a specific
+                        dataset by passing e.g. "neuprint/manc:v1.2.3". If not
+                        specified, will use the latest version available.
     exclude_queries :   bool
                         If True (default), will exclude connections between query
                         neurons from the connectivity vector.
@@ -78,7 +80,7 @@ class MaleVNC(JaneliaDataSet):
         exclude_autapses=True,
         use_sides=False,
         rois=None,
-        meta_source="clio",
+        meta_source="neuprint",
         exclude_queries=False,
         cn_object=None,
     ):
