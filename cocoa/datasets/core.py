@@ -60,6 +60,28 @@ class DataSet(ABC):
     def _parse_ids(self, x, **kwargs):
         pass
 
+    @abstractmethod
+    def get_sides(self, x):
+        pass
+
+    def split_sides(self):
+        """Split neurons into left and right datasets."""
+        if not len(self.neurons):
+            raise ValueError("No neurons in dataset.")
+
+        sides = self.get_sides(self.neurons)
+        if sides is None:
+            raise ValueError("No side information available for this dataset.")
+
+        datasets = []
+        for s in np.unique(sides):
+            ds = self.copy()
+            ds.label = f"{self.label}_{s.lower()}"
+            ds.neurons = self.neurons[sides == s]
+            datasets.append(ds)
+
+        return datasets
+
     def drop_neurons(self, x, **kwargs):
         """Drop neurons from dataset.
 
