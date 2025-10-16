@@ -402,7 +402,6 @@ def _parse_neuprint_dataset(dataset):
         raise ValueError(
             f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
         )
-    dataset = f"{dataset}:{version}"
 
     return f"{dataset}:{version}"
 
@@ -514,10 +513,6 @@ def _get_mcns_types(
                     Source of the annotations.
 
     """
-    assert source in (
-        "clio",
-        "neuprint",
-    ), f'`source` must be clio or neuprint, got "{source}"'
     print(f"Caching male CNS `type` annotations from {source}... ", end="", flush=True)
 
     # This function makes sure that columns have the same name regardless of source
