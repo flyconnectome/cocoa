@@ -325,26 +325,7 @@ def _get_mcns_meta(source):
         else:
             dataset = CLIO_MCNS_DATASET
         client = _get_clio_client(dataset=dataset)
-        ann = clio.fetch_annotations(None, client=client)
-
-        # Some processing to align between the two sources
-        # 1. Drop empty strings (from e.g. `type` column)
-        # 2. Turn column names from snake_case to camelCase
-        new_col_names = {}
-        for c in ann.columns:
-            ann[c] = ann[c].replace("", np.nan).replace(" ", np.nan)
-            if "_" in c:
-                new_col_names[c] = "".join(
-                    [w.capitalize() if i > 0 else w for i, w in enumerate(c.split("_"))]
-                )
-
-        # Rename columns
-        new_col_names["bodyid"] = "bodyId"
-
-        return ann.rename(
-            new_col_names,
-            axis=1,
-        )
+        return _align_columns(clio.fetch_annotations(None, client=client))
     elif source.startswith("neuprint"):
         if "/" in source:
             dataset = source.split("/")[-1]
@@ -368,12 +349,7 @@ def _get_manc_meta(source):
     assert source in ("clio", "neuprint")
     if source == "clio":
         client = _get_clio_client(CLIO_MANC_DATASET)
-        ann = clio.fetch_annotations(None, client=client)
-
-        return ann.rename(
-            {"bodyid": "bodyId", "soma_side": "somaSide", "root_side": "rootSide"},
-            axis=1,
-        )
+        return _align_columns(clio.fetch_annotations(None, client=client))
     else:
         client = _get_neuprint_manc_client()
         return neu.fetch_neurons(
@@ -607,6 +583,30 @@ def _get_manc_types(
     return meta.set_index("bodyId").type.to_dict()
 
 
+def _align_columns(df):
+    """
+    Align columns between different data sources:
+
+     1. Drop empty strings (from e.g. `type` column)
+     2. Turn column names from snake_case to camelCase
+    """
+    new_col_names = {}
+    for c in df.columns:
+        df[c] = df[c].replace("", np.nan).replace(" ", np.nan)
+        if "_" in c:
+            new_col_names[c] = "".join(
+                [w.capitalize() if i > 0 else w for i, w in enumerate(c.split("_"))]
+            )
+
+    # Rename columns
+    new_col_names["bodyid"] = "bodyId"
+
+    return df.rename(
+        new_col_names,
+        axis=1,
+    )
+
+
 def _backfill_types(meta, backfill_types):
     """Backfill types from other columns."""
     for col in backfill_types:
@@ -684,8 +684,8 @@ def _get_mcns_sides(source="clio", backfill_from_root=True):
         {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
     )
 
-    if backfill_from_root and 'rootSide' in meta.columns:
-        meta['side'] = meta.side.fillna(meta.rootSide)
+    if backfill_from_root and "rootSide" in meta.columns:
+        meta["side"] = meta.side.fillna(meta.rootSide)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
@@ -700,8 +700,8 @@ def _get_manc_sides(source="clio", backfill_from_root=True):
         {"soma_side": "side", "somaSide": "side", "bodyid": "bodyId"}, axis=1
     )
 
-    if backfill_from_root and 'rootSide' in meta.columns:
-        meta['side'] = meta.side.fillna(meta.rootSide)
+    if backfill_from_root and "rootSide" in meta.columns:
+        meta["side"] = meta.side.fillna(meta.rootSide)
 
     # Drop neurons without a side
     meta = meta[meta.side.notnull()]
@@ -932,8 +932,10 @@ def _find_column(col, df):
         return col
 
     # Check snake_case
-    if '_' in col:
-        alt = "".join([w.capitalize() if i > 0 else w for i, w in enumerate(col.split("_"))])
+    if "_" in col:
+        alt = "".join(
+            [w.capitalize() if i > 0 else w for i, w in enumerate(col.split("_"))]
+        )
         if alt in df.columns:
             return alt
 
