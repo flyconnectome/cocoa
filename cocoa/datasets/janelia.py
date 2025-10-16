@@ -38,6 +38,11 @@ class JaneliaDataSet(DataSet, ABC):
                 self._cn_object = value
             else:
                 raise ValueError("`cn_object` must be a path, a DataFrame or `None`")
+
+            # Make sure we have the right column names: "bodyId_pre", "bodyId_post", "roi", "weight"
+            self.cn_object = self.cn_object.rename(
+                columns={"body_pre": "bodyId_pre", "body_post": "bodyId_post"}
+            )
         else:
             self._cn_object = None
 
