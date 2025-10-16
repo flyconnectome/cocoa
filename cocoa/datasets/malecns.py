@@ -86,7 +86,7 @@ class MaleCNS(JaneliaDataSet):
     """
 
     _flybrains_space = "JRCFIB2022Mraw"
-    _type_columns = ("type", "flywire_type", "manc_type")
+    _type_columns = ("type", "flywireType", "mancType", "hemibrainType")
 
     def __init__(
         self,
