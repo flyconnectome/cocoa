@@ -12,7 +12,7 @@ from .ds_utils import (
     _get_hemibrain_types,
     _get_hb_sides,
     _add_types,
-    _parse_neuprint_roi
+    _parse_neuprint_roi,
 )
 from ..utils import collapse_neuron_nodes
 
@@ -58,6 +58,7 @@ class Hemibrain(JaneliaDataSet):
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE
     _flybrains_space = "JRCFIB2018Fraw"
     _type_columns = ["type", "morphology_type"]
+    _type_columns = ["type", "morphology_type", "morphologyType"]
 
     def __init__(
         self,
@@ -91,64 +92,6 @@ class Hemibrain(JaneliaDataSet):
         if value is not None:
             value = _parse_neuprint_roi(value, client=self.neuprint_client)
         self._rois = value
-
-    def _add_neurons(self, x, regex="auto", sides=None):
-        """Turn `x` into hemibrain body IDs.
-
-        Parameters
-        ----------
-        x :         int | str | list | np.ndarray | pd.Series | None
-                    Body IDs or cell types to add. Can also use "{column}:{value}" to filter
-                    for values in given column.
-        regex :     "auto" | bool
-                    Whether strings are interpreted as regular expressions.
-                    If "auto" (default), will treat strings starting with "/" as regex.
-        sides :     str | iterable | None
-                    If provided, will only add neurons on the given side(s).
-
-        """
-        if isinstance(x, type(None)):
-            return np.array([], dtype=np.int64)
-
-        if regex == "auto" and isinstance(x, str):
-            regex = x.startswith('/')
-            x = x[1:] if regex else x
-
-        if isinstance(x, pd.Series):
-            x = x.values
-
-        if isinstance(x, (list, np.ndarray, set, tuple)):
-            ids = np.array([], dtype=np.int64)
-            for t in x:
-                ids = np.append(ids, self._add_neurons(t, regex=regex, sides=sides))
-        elif _is_int(x):
-            ids = [int(x)]
-        else:
-            annot = self.get_annotations()
-
-            if ":" not in x:
-                if not regex:
-                    filt = (annot.type == x) | (annot.morphology_type == x)
-                else:
-                    filt = annot.type.str.contains(
-                        x, na=False
-                    ) | annot.morphology_type.str.contains(x, na=False, case=False)
-            else:
-                # If this is e.g. "type:L1-5"
-                col, val = x.split(":")
-                if not regex:
-                    filt = annot[col] == val
-                else:
-                    filt = annot[col].str.contains(val, na=False, case=False)
-
-            if isinstance(sides, str):
-                filt = filt & (annot.side == sides)
-            elif isinstance(sides, (tuple, list, np.ndarray)):
-                filt = filt & annot.side.isin(sides)
-
-            ids = annot.loc[filt, "bodyId"].values.astype(np.int64).tolist()
-
-        return np.unique(np.array(ids, dtype=np.int64))
 
     @property
     def neuprint_client(self):
@@ -328,7 +271,9 @@ class Hemibrain(JaneliaDataSet):
             G.add_edges_from(zip(types.bodyId, types[col]))
 
             # Track which column(s) this label came from
-            nx.set_edge_attributes(G, {e: {col: True} for e in zip(types.bodyId, types[col])})
+            nx.set_edge_attributes(
+                G, {e: {col: True} for e in zip(types.bodyId, types[col])}
+            )
 
         if collapse_neurons:
             G = collapse_neuron_nodes(G)
@@ -368,7 +313,7 @@ class Hemibrain(JaneliaDataSet):
                 _, us = neu.fetch_adjacencies(
                     targets=neu.NeuronCriteria(bodyId=x, client=client),
                     rois=self.rois,
-                    client=client
+                    client=client,
                 )
             if self.exclude_queries:
                 us = us[~us.bodyId_pre.isin(x)]
@@ -400,7 +345,7 @@ class Hemibrain(JaneliaDataSet):
                 _, ds = neu.fetch_adjacencies(
                     sources=neu.NeuronCriteria(bodyId=x, client=client),
                     rois=self.rois,
-                    client=client
+                    client=client,
                 )
             if self.exclude_queries:
                 ds = ds[~ds.bodyId_post.isin(x)]

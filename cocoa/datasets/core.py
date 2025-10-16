@@ -40,25 +40,20 @@ class DataSet(ABC):
         )
         return {n: up.get(n, 0) + down.get(n, 0) for n in self.neurons}
 
+    @property
+    def neuroglancer_source(self):
+        """Neuroglancer source for this dataset."""
+        if not hasattr(self, "_neuroglancer_source"):
+            raise ValueError("No neuroglancer source defined for this dataset.")
+        return self._neuroglancer_source
+
+    @abstractmethod
     def add_neurons(self, x, **kwargs):
-        """Add neurons to dataset.
+        pass
 
-        Parameters
-        ----------
-        x :     str | int | list thereof
-                Something that can be parsed into IDs. Details depend on the
-                dataset.
-
-        """
-        new_neurons = self._add_neurons(x, **kwargs)
-
-        if not len(new_neurons):
-            print(f'No neurons matching "{x}" found.')
-
-        self.neurons = np.unique(
-            np.append(self.neurons, new_neurons)
-        )
-        return self
+    @abstractmethod
+    def _parse_ids(self, x, **kwargs):
+        pass
 
     def drop_neurons(self, x, **kwargs):
         """Drop neurons from dataset.
@@ -68,21 +63,19 @@ class DataSet(ABC):
         x :     str | int | list thereof
                 Something that can be parsed into IDs. Details depend on the
                 dataset.
+        **kwargs
+                Keyword arguments are passed to `_parse_ids`.
 
         """
         if not len(self.neurons):
             return self
 
-        to_drop = self._add_neurons(x, **kwargs)
+        to_drop = self._parse_ids(x, **kwargs)
         self.neurons = np.setdiff1d(self.neurons, to_drop)
         return self
+
     def get_ngl_scene(self):
         return NotImplementedError
-
-    @abstractmethod
-    def _add_neurons(self, x, **kwargs):
-        """Turn `x` into IDs."""
-        pass
 
     @abstractmethod
     def get_labels(self, x, **kwargs):

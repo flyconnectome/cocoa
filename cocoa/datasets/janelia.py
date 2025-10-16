@@ -41,14 +41,38 @@ class JaneliaDataSet(DataSet, ABC):
         else:
             self._cn_object = None
 
+    def add_neurons(self, x, regex="auto", sides=None):
+        """Add neurons to dataset.
 
-    def _add_neurons(self, x, regex="auto", sides=None):
+        Parameters
+        ----------
+        x :         int | str | list | np.ndarray | pd.Series | None
+                    Root IDs or cell types to add. Can also use "{column}:{value}" to filter
+                    for values in given column.
+        regex :     "auto" | bool
+                    Whether strings are interpreted as regular expressions.
+                    If "auto" (default), will treat strings starting with "/" as regex.
+        sides :     str | iterable | None
+                    If provided, will only add neurons on the given side(s).
+
+        """
+        new_neurons = self._parse_ids(x, regex=regex, sides=sides)
+
+        if len(new_neurons):
+            self.neurons = np.unique(np.append(self.neurons, new_neurons))
+        else:
+            print(f'Warning: No neurons found for query "{x}"')
+
+        return self
+
+    def _parse_ids(self, x, regex="auto", sides=None):
         """Turn `x` into body IDs.
 
         Parameters
         ----------
         x :         int | str | list | np.ndarray | pd.Series | None
-                    Body IDs or cell types to add. Can also use "{column}:{value}" to filter
+                    Body IDs or cell types to add. Strings will be matched against all
+                    available type columns. You can also use "{column}:{value}" to filter
                     for values in given column.
         regex :     "auto" | bool
                     Whether strings are interpreted as regular expressions.
@@ -61,7 +85,7 @@ class JaneliaDataSet(DataSet, ABC):
             return np.array([], dtype=np.int64)
 
         if regex == "auto" and isinstance(x, str):
-            regex = x.startswith('/')
+            regex = x.startswith("/")
             x = x[1:] if regex else x
 
         if isinstance(x, pd.Series):
@@ -70,7 +94,7 @@ class JaneliaDataSet(DataSet, ABC):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(ids, self._add_neurons(t, regex=regex, sides=sides))
+                ids = np.append(ids, self._parse_ids(t, regex=regex, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
@@ -84,9 +108,7 @@ class JaneliaDataSet(DataSet, ABC):
                     if not regex:
                         filt = filt | (annot[c] == x).values
                     else:
-                        filt = filt | annot.type.str.contains(
-                            x, na=False, case=False
-                        )
+                        filt = filt | annot.type.str.contains(x, na=False, case=False)
             else:
                 # If this is e.g. "cell_class:L1-5"
                 col, val = x.split(":")
@@ -101,7 +123,10 @@ class JaneliaDataSet(DataSet, ABC):
                 filt = filt & annot.side.isin(sides)
             ids = annot.loc[filt, "bodyId"].unique().astype(np.int64).tolist()
 
-        return np.unique(np.array(ids, dtype=np.int64))
+        if not len(ids):
+            print(f'Warning: No neurons found for query "{x}"')
+
+        return ids
 
     def get_roi_completeness(self):
         """Get ROI completeness for all neurons in this dataset."""

@@ -135,11 +135,8 @@ class FlyWire(DataSet):
         self.live_annot = live_annot
         self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
-        # Replace the default add_neurons docstring with the FlyWire-specific one
-        self.add_neurons.__func__.__doc__ = self._add_neurons.__doc__
-
-    def _add_neurons(self, x, regex="auto", sides=None):
-        """Turn `x` into FlyWire root IDs.
+    def add_neurons(self, x, regex="auto", sides=None):
+        """Add neurons to dataset.
 
         Parameters
         ----------
@@ -153,6 +150,16 @@ class FlyWire(DataSet):
                     If provided, will only add neurons on the given side(s).
 
         """
+        new_neurons = self._parse_ids(x, regex=regex, sides=sides)
+
+        if len(new_neurons):
+            self.neurons = np.unique(np.append(self.neurons, new_neurons))
+        else:
+            print(f'Warning: No neurons found for query "{x}"')
+        return self
+
+    def _parse_ids(self, x, regex="auto", sides=None):
+        """Parse `x` into FlyWire root IDs."""
         if isinstance(x, type(None)):
             return np.array([], dtype=np.int64)
 
@@ -166,7 +173,7 @@ class FlyWire(DataSet):
         if isinstance(x, (list, np.ndarray, set, tuple)):
             ids = np.array([], dtype=np.int64)
             for t in x:
-                ids = np.append(ids, self._add_neurons(t, regex=regex, sides=sides))
+                ids = np.append(ids, self._parse_ids(t, regex=regex, sides=sides))
         elif _is_int(x):
             ids = [int(x)]
         else:
@@ -193,7 +200,7 @@ class FlyWire(DataSet):
                 filt = filt & annot.side.isin(sides)
             ids = annot.loc[filt, "root_id"].unique().astype(np.int64).tolist()
 
-        return np.unique(np.array(ids, dtype=np.int64))
+        return ids
 
     @classmethod
     def hemisphere(cls, hemisphere, label=None, **kwargs):
