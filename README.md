@@ -44,11 +44,11 @@ secrets:
 
 The main concept in `cocoa` is that of a `DataSet`. A `DataSet` represents
 a collection of neurons from a specific source (e.g. FlyWire or hemibrain),
-and provides methods to fetch annotations and connectivity"
+and provides methods to fetch annotations and connectivity.
 
 While you can use `cocoa` to run clusterings on just a single dataset,
 its real power lies in co-clustering neurons from multiple datasets. To do
-this, it aut-magically computes mappings between neurons from different
+this, it auto-magically computes mappings between neurons from different
 datasets based on available labels. These labels are then used to
 generate a joint connectivity vector from which we can compute pairwise
 distances.
