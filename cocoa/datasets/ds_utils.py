@@ -144,7 +144,7 @@ def download_cache_file(url, force_reload="auto", verbose=True):
 def _load_static_flywire_annotations(mat=None, force_reload=False):
     """Download and cache FlyWire annotations from Github repo."""
     print(
-        f"Caching FlyWire annotations for materialization '{mat}'... ",
+        f"Loading FlyWire annotations for materialization '{mat}'... ",
         end="",
         flush=True,
     )
@@ -164,6 +164,11 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
             last_mod = dt.datetime.fromtimestamp(fp.stat().st_mtime)
             if last_mod < last_upd:
                 force_reload = True
+
+    if fp.exists() and not force_reload:
+        print("Reading cached copy... ", end="", flush=True)
+    else:
+        print("Downloading latest version... ", end="", flush=True)
 
     fp = download_cache_file(
         FLYWIRE_ANNOT_URL, force_reload=force_reload, verbose=False
@@ -333,7 +338,6 @@ def _get_mcns_meta(source):
             dataset = NEUPRINT_MCNS_DATASET
 
         dataset = _parse_neuprint_dataset(dataset)
-
         client = _get_neuprint_mcns_client(dataset=dataset)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
