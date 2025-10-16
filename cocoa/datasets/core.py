@@ -16,7 +16,11 @@ class DataSet(ABC):
         return len(self.neurons)
 
     def __repr__(self):
-        return f"class {self.type} <label={self.label};neurons={len(self.neurons)}>"
+        props = f"label={self.label};neurons={len(self.neurons)}"
+        for prop in ("meta_source", ):
+            if hasattr(self, prop):
+                props += f";{prop}={getattr(self, prop)}"
+        return f"class {self.type} <{props}>"
 
     @property
     def type(self):
@@ -24,6 +28,7 @@ class DataSet(ABC):
 
     @property
     def syn_counts(self):
+        """Dictionary of synapse counts for neurons in this dataset."""
         if not hasattr(self, "edges_"):
             raise ValueError("Must first compile connectivity")
         up = (
