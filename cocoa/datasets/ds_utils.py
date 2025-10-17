@@ -221,25 +221,38 @@ def _load_live_flywire_annotations(mat=None):
     cols = FLYWIRE_LIVE_COLUMNS.copy()
     if mat == 783:
         cols.remove("root_id")
-        cols += ["root_783"]
-    table = pd.concat(
-        (
-            info.loc[info.flow.notnull(), cols],
-            optic.loc[optic.flow.notnull(), cols],
-        ),
-        axis=0,
-    ).astype({c: np.int64 for c in ["root_id", "supervoxel_id"] if c in cols})
+        cols += ["root_783", "release_783"]
+    table = (
+        pd.concat(
+            (
+                info.loc[info.flow.notnull(), cols],
+                optic.loc[optic.flow.notnull(), cols],
+            ),
+            axis=0,
+        )
+        .rename({"root_783": "root_id"}, axis=1)
+        .astype({c: np.int64 for c in ["root_id", "supervoxel_id"]})
+    )
 
     # Keep only neurons
     table = table[table.flow.notnull()]
 
     # Drop duplicates
-    table = table[~table.status.isin(["duplicate", "bad_nucleus"])].copy()
+    # First drop those that are marked as duplicates
+    table = table[
+        ~(
+            table.status.isin(["duplicate", "bad_nucleus"])
+            & table.root_id.duplicated(keep=False)
+        )
+    ]
+    # Then drop unmarked duplicates
+    table = table.drop_duplicates(subset=["root_id"]).copy()
+
+    # Clear all statuses other than the outliers
+    table.loc[~table.status.str.contains("outlier"), "status"] = None
 
     if mat == 783:
-        table["root_id"] = table["root_783"].values
-        table.drop("root_783", axis=1, inplace=True)
-        table = table[table.root_id.notnull()].copy().astype({"root_id": np.int64})
+        table = table[table.root_id.notnull()].copy()
     elif mat not in ("live", "current", None):
         timestamp = f"mat_{mat}"
         to_update = ~flywire.is_latest_root(
