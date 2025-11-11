@@ -1,3 +1,4 @@
+import numpy as np
 import seaserpent as ss
 
 from .cave import CaveDataset
@@ -77,6 +78,9 @@ class Aedes(CaveDataset):
         """Return annotations."""
         if hasattr(self, "_annotations"):
             return self._annotations
-        self._annotations = ss.Table("aedes_main", "aedes").to_frame()
+        self._annotations = (
+            ss.Table("aedes_main", "aedes")
+            .to_frame()
+            .astype({"root_id": np.int64})
+        )
         return self._annotations
-
