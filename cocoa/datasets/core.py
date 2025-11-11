@@ -129,7 +129,7 @@ class DataSet(ABC):
         metric="cosine",
         force_recompile=False,
         augment=None,
-        labeled_only=True,
+        drop_unlabeled=True,
         verbose=True,
     ):
         """Calculate cosine distance for neurons in this dataset.
@@ -143,32 +143,39 @@ class DataSet(ABC):
         augment :           str | None
                             Augment the connectivity vector with additional
                             information. Default is None.
-        labeled_only :     bool
-                            Whether to only use neurons with labels. Default is
-                            True.
+        drop_unlabeled :    bool
+                            Only relevant if the `self.use_types=True`:
+                            Whether to drop connections to/from unlabeled neurons
+                            before calculating distances. Default is True.
         verbose :           bool
                             Whether to print progress. Default is True.
+
+        Returns
+        -------
+        self :              DataSet
+                            The dataset with compiled distance matrix as `dists_` attribute.
 
         """
         if not hasattr(self, "edges_") or force_recompile:
             printv(
-                f'Compiling connectivity vector for "{self.label}" ({self.type})',
+                f'Compiling connectivity vector for "{self.label}" ({self.type}: {len(self)} neurons).',
                 verbose=verbose,
             )
             self.compile()
         edges = self.edges_.copy()
 
-        # Could set this to only typed neurons
+        # Compile up- and downstream connectivity
         to_use = list(set(edges[["pre", "post"]].values.flatten().tolist()))
-        to_use = np.array(to_use)[self.label_exists(to_use)]
+        if self.use_types and drop_unlabeled:
+            to_use = np.array(to_use)[self.label_exists(to_use)]
 
-        is_up = edges.post.isin(self.neurons)
-        up_shared = edges.pre.isin(to_use)
+            is_up = edges.post.isin(self.neurons)
+            is_down = edges.pre.isin(self.neurons)
 
-        is_down = edges.pre.isin(self.neurons)
-        down_shared = edges.post.isin(to_use)
+            up_shared = edges.pre.isin(to_use)
+            down_shared = edges.post.isin(to_use)
 
-        edges = edges.loc[(is_up & up_shared) | (is_down & down_shared)]
+            edges = edges.loc[(is_up & up_shared) | (is_down & down_shared)]
 
         adj = edges.groupby(["pre", "post"]).weight.sum().unstack()
         # Get downstream adjacency (rows = queries, columns = shared targets)
@@ -176,7 +183,7 @@ class DataSet(ABC):
         # Get upstream adjacency (rows = shared inputs, columns = queries)
         up = adj.reindex(columns=self.neurons, index=to_use)
 
-        self.vect_ = pd.concat((down, up.T), axis=1).fillna(0)
+        self.vect_ = pd.concat((down, up.T), axis=1).fillna(0).astype(np.uint32)
 
         # Calculate fraction of connectivity used for the observation vector
         syn_counts_after = self.vect_.sum(axis=1)
