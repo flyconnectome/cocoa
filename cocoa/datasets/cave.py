@@ -342,11 +342,11 @@ class CaveDataset(DataSet, ABC):
 
         Parameters
         ----------
-        collapse_types : bool
-                        Whether to collapse by type.
-        annot_only :    bool
-                        If True, will drop edges to/from IDs that aren't
-                        in among the annotations.
+        collapse_types :    bool
+                            Whether to collapse by type.
+        drop_unannotated :  bool
+                            If True, will drop edges to/from IDs that aren't
+                            among the annotations.
 
         Returns
         -------
@@ -364,6 +364,8 @@ class CaveDataset(DataSet, ABC):
                 client=self.caveclient,
                 materialization=self.materialization,
             )
+            if drop_unannotated:
+                us = us[us.pre.isin(self.get_annotations().root_id)]
         if self.downstream:
             ds = _fetch_edges(
                 source=x,
@@ -371,6 +373,8 @@ class CaveDataset(DataSet, ABC):
                 client=self.caveclient,
                 materialization=self.materialization,
             )
+            if drop_unannotated:
+                ds = ds[ds.post.isin(self.get_annotations().root_id)]
 
         if self.exclude_queries:
             if self.upstream:
