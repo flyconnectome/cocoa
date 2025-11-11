@@ -537,7 +537,7 @@ class FlyWire(DataSet):
                 progress=False,
                 neuropils=not collapse_rois,
                 materialization=mat,
-            )
+            ).rename(columns={"source": "pre", "target": "post"})
 
         if collapse_rois:
             adj = adj.groupby(["pre", "post"], as_index=False).weight.sum()
