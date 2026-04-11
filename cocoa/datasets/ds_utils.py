@@ -799,41 +799,51 @@ def _add_types(
         edges = edges.copy()
 
     # Add type
-    edges["type"] = edges[col].map(types)
-    has_type = edges.type.notnull()
+    edges["__type__"] = edges[col].map(types)
+    has_type = edges["__type__"].notnull()
 
     # Add side
     if sides:
-        edges["side"] = edges[col].map(sides)
+        edges["__side__"] = edges[col].map(sides)
 
-        has_side = edges.side.notnull()
-        not_center = edges.side != "center"
+        has_side = edges["__side__"].notnull()
+        not_center = ~edges["__side__"].isin(["center", "C", "M"])
 
         # Make sides relative to the neuron on the other side of the edge
         if sides_rel:
-            edges["side_other"] = edges[other].map(sides)
-            has_side_both = edges.side.notnull() & edges.side_other.notnull()
-            not_center_both = (edges.side_other != "center") & (edges.side != "center")
-            same_side = edges.side == edges.side_other
+            edges["__side_other__"] = edges[other].map(sides)
+            has_side_both = (
+                edges["__side__"].notnull() & edges["__side_other__"].notnull()
+            )
+            not_center_both = (edges["__side_other__"] != "center") & (
+                edges["__side__"] != "center"
+            )
+            same_side = edges["__side__"] == edges["__side_other__"]
             edges.loc[
-                has_type & has_side_both & not_center_both & same_side, "side"
+                has_type & has_side_both & not_center_both & same_side, "__side__"
             ] = "ipsi"
             edges.loc[
-                has_type & has_side_both & not_center_both & ~same_side, "side"
+                has_type & has_side_both & not_center_both & ~same_side, "__side__"
             ] = "contra"
 
         # Add side to the type
         to_mod = has_side & has_type & not_center
-        edges.loc[to_mod, "type"] = edges.loc[to_mod, ["type", "side"]].apply(
-            lambda x: f"{x[0]}_{x[1]}", axis=1
-        )
+        edges.loc[to_mod, "__type__"] = edges.loc[
+            to_mod, ["__type__", "__side__"]
+        ].apply(lambda x: f"{x.__type__}_{x.__side__}", axis=1)
 
     # Replace `col` with type
-    edges.loc[has_type, col] = edges.loc[has_type, "type"]
-    edges.drop(["type", "side", "side_other"], errors="ignore", inplace=True, axis=1)
+    edges[col] = edges[col].astype(object)
+    edges.loc[has_type, col] = edges.loc[has_type, "__type__"]
+    edges.drop(
+        ["__type__", "__side__", "__side_other__"],
+        errors="ignore",
+        inplace=True,
+        axis=1,
+    )
 
     if drop_untyped:
-        edges = edges.loc[has_type]
+        edges = edges.loc[has_type].copy()
 
     return edges
 
