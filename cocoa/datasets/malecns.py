@@ -271,14 +271,13 @@ class MaleCNS(JaneliaDataSet):
 
         return x
 
-    def clear_cache(self):
+    @classmethod
+    def clear_cache(cls):
         """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_mcns_meta.cache_clear()
         _get_mcns_types.cache_clear()
         _get_mcns_meta.cache_clear()
         print("Cleared cached male CNS data.")
-
-        return self
 
     def get_annotations(self, source=None, clear_cache=False):
         """Return annotations.

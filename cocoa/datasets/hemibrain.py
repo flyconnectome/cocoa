@@ -149,7 +149,8 @@ class Hemibrain(JaneliaDataSet):
 
         return x
 
-    def clear_cache(self):
+    @classmethod
+    def clear_cache(cls):
         """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_hemibrain_meta.cache_clear()
         _get_hemibrain_types.cache_clear()

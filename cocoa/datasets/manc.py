@@ -185,14 +185,13 @@ class MaleVNC(JaneliaDataSet):
 
         return x
 
-    def clear_cache(self):
+    @classmethod
+    def clear_cache(cls):
         """Clear cached in-memory data (e.g. annotations). Does not clear data cached on disk."""
         _get_manc_meta.cache_clear()
         _get_manc_types.cache_clear()
         _get_manc_meta.cache_clear()
         print("Cleared cached male VNC data.")
-
-        return self
 
     def get_annotations(self):
         """Return annotations."""
