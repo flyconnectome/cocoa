@@ -76,6 +76,12 @@ class FlyWire(DataSet):
                     A label used for reporting, plotting, etc.
     up/downstream : bool
                     Whether to use up- and/or downstream connectivity.
+    filtered :      bool
+                    Whether to use filtered connectivity, which includes dropping
+                    (presumably) duplicated synapses and synapses with low (<50)
+                    confidence score.
+    min_score :     int
+                    Minimum confidence score for synapses to be included in the connectivity.
     use_types :     bool
                     Whether to group by type. This will use `cell_type` first
                     and where that doesn't exist fall back to `hemibrain_type`.
@@ -113,6 +119,8 @@ class FlyWire(DataSet):
         label="FlyWire",
         upstream=True,
         downstream=True,
+        filtered=True,
+        min_score=0,
         use_types=False,
         use_sides=False,
         exclude_queries=False,
@@ -127,6 +135,8 @@ class FlyWire(DataSet):
         self.cn_object = cn_object
         self.upstream = upstream
         self.downstream = downstream
+        self.filtered = filtered
+        self.min_score = min_score
         self.use_types = use_types
         self.use_sides = use_sides
         self.exclude_queries = exclude_queries
@@ -620,8 +630,8 @@ class FlyWire(DataSet):
                     upstream=True,
                     downstream=False,
                     proofread_only=True,
-                    filtered=True,
-                    min_score=50,
+                    filtered=self.filtered,
+                    min_score=self.min_score,
                     progress=False,
                     materialization=mat,
                 )
@@ -631,8 +641,8 @@ class FlyWire(DataSet):
                     upstream=False,
                     downstream=True,
                     proofread_only=True,
-                    filtered=True,
-                    min_score=50,
+                    filtered=self.filtered,
+                    min_score=self.min_score,
                     progress=False,
                     materialization=mat,
                 )
