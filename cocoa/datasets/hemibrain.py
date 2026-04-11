@@ -8,13 +8,14 @@ from .scenes import HEMIBRAIN_MINIMAL_SCENE
 from .ds_utils import (
     _get_hemibrain_meta,
     _get_neuprint_hemibrain_client,
-    _is_int,
     _get_hemibrain_types,
     _get_hb_sides,
     _add_types,
     _parse_neuprint_roi,
 )
 from ..utils import collapse_neuron_nodes
+
+_DEFAULT_NEUROGLANCER_SOURCE = "precomputed://gs://neuroglancer-janelia-flyem-hemibrain/v1.2/segmentation"
 
 __all__ = ["Hemibrain"]
 
@@ -57,7 +58,7 @@ class Hemibrain(JaneliaDataSet):
 
     _NGL_LAYER = HEMIBRAIN_MINIMAL_SCENE
     _flybrains_space = "JRCFIB2018Fraw"
-    _type_columns = ["type", "morphology_type"]
+    _color = "orange"
     _type_columns = ["type", "morphology_type", "morphologyType"]
 
     def __init__(
@@ -83,6 +84,7 @@ class Hemibrain(JaneliaDataSet):
         self.meta_source = meta_source
         self.cn_object = cn_object
         self.rois = rois
+        self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
     @property
     def rois(self):

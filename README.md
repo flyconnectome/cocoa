@@ -40,7 +40,7 @@ secrets:
    make sure to set the `SEATABLE_SERVER` and `SEATABLE_TOKEN` environment variables
    (see [sea-serpent](https://github.com/schlegelp/sea-serpent))
 
-## Concepts
+## Core concepts
 
 The main concept in `cocoa` is that of a `DataSet`. A `DataSet` represents
 a collection of neurons from a specific source (e.g. FlyWire or hemibrain),

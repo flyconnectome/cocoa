@@ -8,6 +8,7 @@ from ..distance import calculate_distance
 
 
 class DataSet(ABC):
+
     def __init__(self, label):
         self.label = label
         self.neurons = np.zeros((0,), dtype=np.int64)
@@ -52,12 +53,20 @@ class DataSet(ABC):
             raise ValueError("No neuroglancer source defined for this dataset.")
         return self._neuroglancer_source
 
+    @neuroglancer_source.setter
+    def neuroglancer_source(self, value):
+        self._neuroglancer_source = value
+
     @abstractmethod
     def add_neurons(self, x, **kwargs):
         pass
 
     @abstractmethod
     def _parse_ids(self, x, **kwargs):
+        pass
+
+    @abstractmethod
+    def copy(self):
         pass
 
     @abstractmethod
