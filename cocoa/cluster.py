@@ -418,19 +418,34 @@ class Clustering:
         sources = []
         labels = []
         for ds in self.datasets:
-            # Group the edge list
-            adj = ds.edges_proc_.groupby(["pre", "post"]).weight.sum().unstack()
-            # Get downstream adjacency (rows = queries, columns = shared targets)
-            down = adj.reindex(index=ds.neurons, columns=to_use)
+            edges = ds.edges_proc_
+            # Compute only the two blocks we need rather than a full matrix.
+            down = (
+                edges.loc[
+                    edges.pre.isin(ds.neurons) & edges.post.isin(to_use)
+                ]
+                .groupby(["pre", "post"]).weight.sum()
+                .unstack(fill_value=0)
+                .reindex(index=ds.neurons, columns=to_use, fill_value=0)
+            )
             down.columns = pd.MultiIndex.from_tuples(
                 [("downstream", c) for c in down.columns]
             )
-            # Get upstream adjacency (rows = shared inputs, columns = queries)
-            up = adj.reindex(columns=ds.neurons, index=to_use).T
+
+            up = (
+                edges.loc[
+                    edges.pre.isin(to_use) & edges.post.isin(ds.neurons)
+                ]
+                .groupby(["pre", "post"]).weight.sum()
+                .unstack(fill_value=0)
+                .reindex(index=to_use, columns=ds.neurons, fill_value=0)
+                .T
+            )
             up.columns = pd.MultiIndex.from_tuples(
                 [("upstream", c) for c in up.columns]
             )
-            adjacencies.append(pd.concat((down, up), axis=1).fillna(0))
+
+            adjacencies.append(pd.concat((down, up), axis=1))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
         self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
