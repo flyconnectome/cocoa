@@ -346,12 +346,21 @@ def _get_mcns_meta(source):
         return _align_columns(clio.fetch_annotations(None, client=client))
     elif source.startswith("neuprint"):
         if "/" in source:
-            dataset = source.split("/")[-1]
+            if source.count("/") != 1:
+                raise ValueError(
+                    f"Invalid neuPrint source '{source}'. Expected format 'server/dataset' or 'server/dataset:version'."
+                )
+            server, dataset = source.split("/")
+            if not server.startswith("http"):
+                server = f"https://{server}"
+            if not server.endswith(".janelia.org"):
+                server += ".janelia.org"
         else:
+            server = NEUPRINT_URL
             dataset = NEUPRINT_MCNS_DATASET
 
-        dataset = _parse_neuprint_dataset(dataset)
-        client = _get_neuprint_mcns_client(dataset=dataset)
+        dataset = _parse_neuprint_dataset(dataset, server=server)
+        client = _get_neuprint_mcns_client(dataset=dataset, server=server)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
             omit_rois=True,
@@ -360,15 +369,14 @@ def _get_mcns_meta(source):
     else:
         raise ValueError(f"Unknown male CNS source: {source}. ")
 
-
 @lru_cache
-def _get_manc_meta(source):
+def _get_manc_meta(source, server=None):
     assert source in ("clio", "neuprint")
     if source == "clio":
         client = _get_clio_client(CLIO_MANC_DATASET)
         return _align_columns(clio.fetch_annotations(None, client=client))
     else:
-        client = _get_neuprint_manc_client()
+        client = _get_neuprint_manc_client(server=server)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
             omit_rois=True,
@@ -377,17 +385,18 @@ def _get_manc_meta(source):
 
 
 @lru_cache
-def _get_neuprint_datasets():
+def _get_neuprint_datasets(server=None):
     """Get available neuPrint datasets."""
     token = os.environ.get("NEUPRINT_APPLICATION_CREDENTIALS")
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(f"{NEUPRINT_URL}/api/dbmeta/datasets", headers=headers)
+    server = server or NEUPRINT_URL
+    r = requests.get(f"{server}/api/dbmeta/datasets", headers=headers)
     r.raise_for_status()
     return list(r.json())
 
 
 @lru_cache
-def _parse_neuprint_dataset(dataset):
+def _parse_neuprint_dataset(dataset, server=None):
     """Find neuPrint dataset and version.
 
     Parameters
@@ -402,7 +411,7 @@ def _parse_neuprint_dataset(dataset):
     else:
         dataset, version = dataset, "latest"
 
-    available = _get_neuprint_datasets()
+    available = _get_neuprint_datasets(server=server)
     versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
     if not versions:
         raise ValueError(
@@ -410,7 +419,13 @@ def _parse_neuprint_dataset(dataset):
         )
 
     if version == "latest":
-        version = max(versions)
+        try:
+            versions_srt = _semantic_version_sort(versions)
+        except BaseException:
+            print(f"Failed to parse semantic versions for dataset '{dataset}': {versions}.\nFalling back to lexicographic sorting.")
+            versions_srt = sorted(versions)
+        version = versions_srt[-1]
+        print(f"Using latest version of dataset '{dataset}': {version}")
     elif version not in versions:
         raise ValueError(
             f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
@@ -419,22 +434,29 @@ def _parse_neuprint_dataset(dataset):
     return f"{dataset}:{version}"
 
 
+def _semantic_version_sort(versions):
+    """Sort versions in the format v0.9, v0.13, v1.0."""
+    def version_key(v):
+        return [int(x) for x in v.lstrip("v").split(".")]
+    return sorted(versions, key=version_key)
+
+
 @lru_cache
-def _get_neuprint_hemibrain_client(version="1.2.1"):
+def _get_neuprint_hemibrain_client(version="1.2.1", server=None):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client(NEUPRINT_URL, dataset=f"hemibrain:v{version}")
+    return neu.Client(dataset=f"hemibrain:v{version}", server=server or NEUPRINT_URL)
 
 
 @lru_cache
-def _get_neuprint_mcns_client(dataset):
-    dataset = _parse_neuprint_dataset(dataset)
-    return neu.Client(NEUPRINT_URL, dataset=dataset)
+def _get_neuprint_mcns_client(dataset, server=None):
+    dataset = _parse_neuprint_dataset(dataset, server=server)
+    return neu.Client(dataset=dataset, server=server or NEUPRINT_URL)
 
 
 @lru_cache
-def _get_neuprint_manc_client(version="1.2.1"):
+def _get_neuprint_manc_client(version="1.2.1", server=None):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client(NEUPRINT_URL, dataset=f"manc:v{version}")
+    return neu.Client(dataset=f"manc:v{version}", server=server or NEUPRINT_URL)
 
 
 @lru_cache
