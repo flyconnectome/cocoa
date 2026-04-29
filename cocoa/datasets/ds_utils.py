@@ -1,3 +1,4 @@
+import hashlib
 import os
 import clio
 import requests
@@ -122,22 +123,37 @@ def download_cache_file(url, force_reload="auto", verbose=True):
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-    fp = cache_dir / Path(url).name
+    fp = _url_to_cache_path(url)
 
     if not fp.exists() or force_reload:
         if verbose:
+            parsed = urlparse(url)
             print(
-                f"Caching {fp.name} from {urlparse(url).netloc}... ", end="", flush=True
+                f"Caching {fp.name} from {parsed.netloc}... ", end="", flush=True
             )
         r = requests.get(url, allow_redirects=True)
         r.raise_for_status()
         content_type = r.headers.get("content-type", "").lower()
         is_text = "text" in content_type or "html" in content_type
-        with open(fp, mode="w" if is_text else "w") as f:
-            f.write(r.content.decode())
+        mode = "w" if is_text else "wb"
+        with open(fp, mode) as f:
+            if is_text:
+                f.write(r.text)
+            else:
+                f.write(r.content)
         if verbose:
             print("Done.")
     return fp
+
+
+def _url_to_cache_path(url):
+    """Convert URL to cache path."""
+    parsed = urlparse(url)
+    basename = Path(parsed.path).name or parsed.netloc or "download"
+    hash_suffix = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
+    stem, suffix = Path(basename).stem, Path(basename).suffix
+    cache_name = f"{stem}_{hash_suffix}{suffix}"
+    return Path(CACHE_DIR).expanduser().absolute() / cache_name
 
 
 @lru_cache
@@ -148,7 +164,7 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
         end="",
         flush=True,
     )
-    fp = Path(CACHE_DIR).expanduser().absolute() / Path(FLYWIRE_ANNOT_URL).name
+    fp = _url_to_cache_path(FLYWIRE_ANNOT_URL)
 
     # If file already exists, check if we need to refresh the cache
     if fp.exists():
@@ -216,12 +232,14 @@ def _load_live_flywire_annotations(mat=None):
         end="",
         flush=True,
     )
-    info = _get_table(which="info")
-    optic = _get_table(which="optic")
+    info = _get_flywire_table(which="info")
+    optic = _get_flywire_table(which="optic")
     cols = FLYWIRE_LIVE_COLUMNS.copy()
     if mat == 783:
         cols.remove("root_id")
-        cols += ["root_783", "release_783"]
+        for c in ["root_783", "release_783"]:
+            if c not in cols:
+                cols += [c]
     table = (
         pd.concat(
             (
@@ -268,6 +286,7 @@ def _load_live_flywire_annotations(mat=None):
 
 @lru_cache
 def _get_table(which="info"):
+def _get_flywire_table(which="info"):
     """Initialize connection to annotation table."""
     if which == "info":
         return ss.Table("info", base="main", read_only=True)
