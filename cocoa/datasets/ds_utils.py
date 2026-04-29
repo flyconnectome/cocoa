@@ -78,6 +78,17 @@ FLYWIRE_LIVE_COLUMNS = [
     "synonyms",
 ]
 
+BANC_LIVE_COLUMNS = [
+    "root_id",
+    "supervoxel_id",
+    "superclass",
+    "class",
+    "type",
+    "hemilineage",
+    "side",
+    "region",
+]
+
 HEMIBRAIN_LIVE_COLUMNS = [
     "bodyId",
     "super_class",
@@ -97,7 +108,7 @@ NEUPRINT_URL = "https://neuprint.janelia.org"
 NEUPRINT_MCNS_DATASET = "male-cns:latest"
 
 
-def download_cache_file(url, force_reload="auto", verbose=True):
+def download_cache_file(url, force_reload=False, verbose=True):
     """Load file from URL and cache locally.
 
     Parameters
@@ -285,7 +296,45 @@ def _load_live_flywire_annotations(mat=None):
 
 
 @lru_cache
-def _get_table(which="info"):
+def _load_live_banc_annotations(mat=None):
+    """Load live BANC annotations from SeaTable."""
+    print(
+        f"Caching live BANC annotations for materialization '{mat}'... ",
+        end="",
+        flush=True,
+    )
+    main = _get_banc_table()
+    cols = BANC_LIVE_COLUMNS.copy()
+
+    if f"root_{mat}" in main.columns:
+        cols.remove("root_id")
+        cols += ["root_{mat}"]
+    table = (
+        main.loc[:, cols]
+        .rename({f"root_{mat}": "root_id"}, axis=1)
+        .astype({"root_id": np.int64, "supervoxel_id": np.int64})
+    )
+
+    # Drop duplicates (make sure to keep those rows with more annotations)
+    srt = np.argsort(table.notnull().sum(axis=1))[::-1]
+    table = table.loc[srt].drop_duplicates(subset=["root_id"]).copy()
+
+    if f"root_{mat}" in main.columns:
+        table = table[table.root_id.notnull()].copy()
+    elif mat not in ("live", "current", None):
+        timestamp = f"mat_{mat}"
+        to_update = ~flywire.is_latest_root(
+            table.root_id, timestamp=timestamp, progress=False
+        )
+        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
+            table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
+        )
+    print("Done.")
+
+    return table
+
+
+@lru_cache
 def _get_flywire_table(which="info"):
     """Initialize connection to annotation table."""
     if which == "info":
@@ -297,6 +346,12 @@ def _get_flywire_table(which="info"):
 
 
 @lru_cache
+def _get_banc_table():
+    """Initialize connection to annotation table."""
+    return ss.Table("banc_main", base="banc", read_only=True)
+
+
+@lru_cache
 def _load_static_hemibrain_annotations(force_reload=False):
     """Download and cache hemibrain annotations from Github repo."""
     print(
@@ -304,7 +359,7 @@ def _load_static_hemibrain_annotations(force_reload=False):
         end="",
         flush=True,
     )
-    fp = Path(CACHE_DIR).expanduser().absolute() / Path(HEMIBRAIN_ANNOT_URL).name
+    fp = _url_to_cache_path(HEMIBRAIN_ANNOT_URL)
 
     # If file already exists, check if we need to refresh the cache
     if fp.exists():
