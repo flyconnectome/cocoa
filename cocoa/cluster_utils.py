@@ -1,3 +1,4 @@
+import heapq
 import networkx as nx
 import tanglegram as tg
 import numpy as np
@@ -34,24 +35,28 @@ def is_good(v, n_unique_ds):
 
 
 def extract_homogeneous_clusters(
-    dists,
+    dists_or_linkage,
     labels,
     eval_func=is_good,
     max_dist=None,
     min_dist=None,
     min_dist_diff=None,
     link_method="ward",
-    linkage=None,
     verbose=False,
 ):
     """Make clusters that contains representatives of each unique label.
 
     Parameters
     ----------
-    dists :         pd.DataFrame
-                    Distances from which to find clusters.
+    dists_or_linkage : pd.DataFrame | np.ndarray
+                    Either a square distance (or similarity) matrix, or a
+                    precomputed linkage of shape (N, 4) as produced by
+                    `scipy.cluster.hierarchy.linkage`. Which one it is is
+                    detected from the shape; `link_method` is ignored if a
+                    linkage is given.
     labels :        np.ndarray
-                    Labels for each row in `dists`.
+                    Labels for each observation, in the same order as the rows
+                    of the distance matrix (or the leaves of the linkage).
     eval_func :     callable
                     Must accept two positional arguments:
                      1. A numpy array of label counts (e.g. `[1, 1, 2]`)
@@ -74,49 +79,69 @@ def extract_homogeneous_clusters(
                     we will merge if the three horizontal lines in the dendrograms
                     are closer together than `min_dist_diff`.
     link_method :   str
-                    Method to use for generating the linkage.
-    linkage :       np.ndarray
-                    Precomputed linkage. If this is given `link_method` is ignored.
+                    Method to use for generating the linkage. Ignored if
+                    `dists_or_linkage` is already a linkage.
 
     Returns
     -------
     cl :        np.ndarray
 
     """
-    if dists.values[0, 0] >= 0.999:
-        dists = 1 - dists
-
-    # Make linkage
-    if linkage is None:
-        Z = sch.linkage(squareform(dists, checks=False), method=link_method)
+    if _is_linkage(dists_or_linkage):
+        Z = np.asarray(dists_or_linkage)
     else:
-        Z = linkage
+        dists = dists_or_linkage
+        if isinstance(dists, pd.DataFrame):
+            dists = dists.values
+        dists = np.asarray(dists)
+        if dists.ndim != 2 or dists.shape[0] != dists.shape[1]:
+            raise ValueError(
+                "Expected either a square distance matrix or an (N, 4) linkage, "
+                f"got array of shape {dists.shape}."
+            )
+        # Distance matrices have a zero diagonal, similarity matrices a diagonal
+        # of one - use that to detect the latter and convert it
+        if dists[0, 0] >= 0.999:
+            dists = 1 - dists
+        Z = sch.linkage(squareform(dists, checks=False), method=link_method)
 
-    # Turn linkage into graph
-    G = tg.utils.linkage_to_graph(Z, labels=labels)
+    # The linkage has one row per merge, i.e. one less than the observations
+    n_obs = Z.shape[0] + 1
 
-    # Add origin as node attribute
-    n_unique_ds = len(np.unique(labels))
+    if len(labels) != n_obs:
+        raise ValueError(f"Got {len(labels)} labels for {n_obs} observations.")
+
+    # Describe the dendrogram as flat arrays - this is a lot cheaper to walk
+    # than a networkx graph and lets us count labels in a single sweep
+    children, parent, node_dist = _dendrogram_arrays(Z, n_obs)
+
+    # Encode the labels as integer codes. `np.unique` sorts, so counting into
+    # these codes gives us per-cluster counts in the same (sorted) order that
+    # `np.unique(..., return_counts=True)` would.
+    uniq, codes = np.unique(labels, return_inverse=True)
+    n_unique_ds = len(uniq)
+
+    # Number of observations per label for every node in the dendrogram
+    counts = _subtree_label_counts(children, codes, n_obs, n_unique_ds)
 
     # Prepare eval function
     def _eval_func(x):
         return eval_func(x, n_unique_ds)
 
-    # Find clusters recursively
+    # Find clusters
     clusters = {}
-    label_dict = nx.get_node_attributes(G, "label")
-    _ = _find_clusters_rec(
-        G,
+    _find_clusters(
+        root=len(children) - 1,
         clusters=clusters,
         eval_func=_eval_func,
-        label_dict=label_dict,
+        children=children,
+        node_dist=node_dist,
+        counts=counts,
+        n_obs=n_obs,
         max_dist=max_dist,
         min_dist=min_dist,
         verbose=verbose,
     )
-
-    # Keep only clusters labels for the leaf nodes
-    clusters = {k: v for k, v in clusters.items() if k in label_dict}
 
     # Clusters are currently labels based at which hinge they were created
     # We have to renumber them
@@ -125,102 +150,203 @@ def extract_homogeneous_clusters(
 
     # At this point singletons might not be assigned a cluster - we need
     # to account for that and give them a unique cluster
-    for i in np.arange((len(dists))):
+    n_cl = len(reind)
+    for i in range(n_obs):
         if i not in clusters:
-            clusters[i] = len(set(clusters.values()))
+            clusters[i] = n_cl
+            n_cl += 1
 
-    cl = np.array([clusters[i] for i in np.arange(len(dists))])
+    cl = np.array([clusters[i] for i in range(n_obs)])
 
     if min_dist_diff:
         cl = _merge_similar_clusters(
-            cl=cl, G=G, Z=G, dist_thresh=min_dist_diff, verbose=verbose
+            cl=cl,
+            children=children,
+            parent=parent,
+            node_dist=node_dist,
+            n_obs=n_obs,
+            dist_thresh=min_dist_diff,
+            verbose=verbose,
         )
 
     return cl
 
 
-def _find_clusters_rec(
-    G, clusters, eval_func, label_dict, max_dist=None, min_dist=None, verbose=False
+def _is_linkage(x):
+    """Check whether `x` is a linkage rather than a distance matrix."""
+    if isinstance(x, pd.DataFrame):
+        x = x.values
+    x = np.asarray(x)
+
+    # Linkages are (N, 4); distance matrices are square
+    if x.ndim != 2 or x.shape[1] != 4:
+        return False
+
+    # A (4, 4) input is ambiguous - it could be a linkage for 5 observations or
+    # a distance matrix for 4. Distance (and similarity) matrices are symmetric
+    # with a constant diagonal, linkages effectively never are.
+    if x.shape[0] == x.shape[1]:
+        diag = np.diag(x)
+        if np.allclose(x, x.T) and np.allclose(diag, diag[0]):
+            return False
+
+    return True
+
+
+def _dendrogram_arrays(Z, n_obs):
+    """Describe a linkage as flat arrays.
+
+    Nodes `0` to `n_obs - 1` are the leafs, `n_obs` onwards the hinges. Because
+    a hinge always has a higher ID than the two nodes it joins, the last node is
+    the root and any subtree's root is its highest node.
+
+    Returns
+    -------
+    children :  (n_nodes, 2) array of node IDs; `-1` for leafs.
+    parent :    (n_nodes, ) array of node IDs; `-1` for the root.
+    node_dist : (n_nodes, ) array of hinge distances; `0` for leafs.
+
+    """
+    n_nodes = 2 * n_obs - 1
+
+    children = np.full((n_nodes, 2), -1, dtype=np.int64)
+    children[n_obs:] = Z[:, :2].astype(np.int64)
+
+    parent = np.full(n_nodes, -1, dtype=np.int64)
+    parent[children[n_obs:, 0]] = np.arange(n_obs, n_nodes)
+    parent[children[n_obs:, 1]] = np.arange(n_obs, n_nodes)
+
+    node_dist = np.zeros(n_nodes, dtype=np.float64)
+    node_dist[n_obs:] = Z[:, 2]
+
+    return children, parent, node_dist
+
+
+def _subtree_label_counts(children, codes, n_obs, n_unique):
+    """Count labels below every node in the dendrogram.
+
+    Hinges are processed in ascending order, which is guaranteed to be
+    bottom-up, so each node is just the sum of its two children.
+    """
+    counts = np.zeros((len(children), n_unique), dtype=np.intp)
+    counts[np.arange(n_obs), codes] = 1
+    for i in range(n_obs, len(children)):
+        left, right = children[i]
+        counts[i] = counts[left] + counts[right]
+    return counts
+
+
+def _subtree_leafs(node, children, n_obs):
+    """Collect the leafs below `node`."""
+    if node < n_obs:
+        return [int(node)]
+
+    leafs, stack = [], [node]
+    while stack:
+        n = stack.pop()
+        if n < n_obs:
+            leafs.append(int(n))
+        else:
+            stack.extend(children[n])
+    return leafs
+
+
+def _find_clusters(
+    root,
+    clusters,
+    eval_func,
+    children,
+    node_dist,
+    counts,
+    n_obs,
+    max_dist=None,
+    min_dist=None,
+    verbose=False,
 ):
-    """Recursively find clusters."""
-    if G.is_directed():
-        G = G.to_undirected()
+    """Find clusters by walking the dendrogram from `root` downwards.
 
-    # The root node should always be the last in the graph
-    root = max(G.nodes)
+    Uses an explicit stack rather than recursion: dendrograms are easily deep
+    enough to exhaust Python's recursion limit.
+    """
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        dist = node_dist[node]
+        is_leaf = node < n_obs
 
-    try:
-        dist = G.nodes[root]["distance"]  # the distance between the two prior clusters
-    except KeyError:
-        # If this is a leaf-node it won't have a "distance" property
-        dist = 0
+        # Count the number of labels (i.e. datasets) present in each subtree.
+        # A leaf can't be split and hence has nothing to evaluate.
+        kid_counts = [] if is_leaf else [counts[k] for k in children[node]]
+        # Evaluate the counts (dropping labels that aren't present at all)
+        is_good = [eval_func(c[c > 0]) for c in kid_counts]
 
-    # Remove the root in this (sub)graph
-    G2 = G.copy()
-    G2.remove_node(root)
-
-    # Split into the two connected components
-    CC = list(nx.connected_components(G2))
-    # Count the number of labels (i.e. datasets) present in each subgraph
-    counts = [_count_labels(c, label_dict=label_dict) for c in CC]
-    # Evaluate the counts
-    is_good = [eval_func(c) for c in counts]
-
-    # Check if we should stop here
-    stop = False
-    # If we are below the minimum distance we have to stop
-    if min_dist and (dist <= min_dist):
-        stop = True
-    # If one or both of the clusters are bad...
-    elif not all(is_good):
-        # ... and the distance between the two clusters below is not too big
-        # we can stop
-        if max_dist and (dist <= max_dist):
+        # Check if we should stop here
+        stop = False
+        # If we are below the minimum distance we have to stop
+        if min_dist and (dist <= min_dist):
             stop = True
-        elif not max_dist:
-            stop = True
+        # If one or both of the clusters are bad...
+        elif not all(is_good):
+            # ... and the distance between the two clusters below is not too big
+            # we can stop
+            if max_dist and (dist <= max_dist):
+                stop = True
+            elif not max_dist:
+                stop = True
 
-    if not stop:
-        for c in CC:
-            _find_clusters_rec(
-                G.subgraph(c),
-                clusters=clusters,
-                eval_func=eval_func,
-                label_dict=label_dict,
-                max_dist=max_dist,
-                min_dist=min_dist,
-                verbose=verbose,
-            )
-    else:
-        if verbose:
-            print(
-                f"Found cluster of {sum([c.sum() for c in counts])} at distance {dist} ({root})"
-            )
-        clusters.update({n: root for n in G.nodes})
-
-    return
-
-
-def _count_labels(cluster, label_dict):
-    """Takes a list of node IDs and counts labels among those."""
-    cluster = list(cluster) if isinstance(cluster, set) else cluster
-    cluster = np.asarray(cluster)
-    cluster = cluster[np.isin(cluster, list(label_dict))]
-    _, cnt = np.unique([label_dict[n] for n in cluster], return_counts=True)
-    return cnt
+        if not stop:
+            if not is_leaf:
+                # Push right first so that the left branch is visited first
+                stack.extend(children[node][::-1])
+        else:
+            if verbose:
+                print(
+                    f"Found cluster of {sum([c.sum() for c in kid_counts])} at distance {dist} ({node})"
+                )
+            node = int(node)
+            for leaf in _subtree_leafs(node, children, n_obs):
+                clusters[leaf] = node
 
 
-def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
+def _lca(nodes, parent):
+    """Lowest common ancestor of `nodes`.
+
+    A hinge always has a higher ID than the nodes it joins, so repeatedly
+    lifting the lowest node to its parent converges on their common ancestor.
+    """
+    pending = {int(n) for n in nodes}
+    heap = sorted(pending)
+    heapq.heapify(heap)
+    while len(pending) > 1:
+        node = heapq.heappop(heap)
+        pending.discard(node)
+        # The root is never popped while others remain (it has the highest ID),
+        # so we can't walk off the top here
+        up = int(parent[node])
+        if up not in pending:
+            pending.add(up)
+            heapq.heappush(heap, up)
+    return pending.pop()
+
+
+def _leftmost_leaf(node, children, n_obs):
+    """First leaf below `node`, descending via the first child throughout."""
+    while node >= n_obs:
+        node = children[node][0]
+    return int(node)
+
+
+def _merge_similar_clusters(
+    cl, children, parent, node_dist, n_obs, dist_thresh, verbose=False
+):
     """Merge similar clusters.
 
     Parameters
     ----------
     cl :        np.ndarray
                 Clusters membership that is to be checked.
-    Z :         np.ndarray
-                Linkage.
-    G :         nx.DiGraph
-                Graph representing the linkage.
+    children/parent/node_dist/n_obs
+                The dendrogram, see `_dendrogram_arrays`.
     dist_thresh : float
                 Distance under which to merge clusters.
 
@@ -230,43 +356,41 @@ def _merge_similar_clusters(cl, G, Z, dist_thresh, verbose=False):
                 Fixed cluster membership.
 
     """
-    ix = np.arange(len(cl))
-    to_merge = []
-    for c1 in np.unique(cl):
-        # Get the connected subgraph for this cluster
-        p = nx.shortest_path(G.to_undirected(), source=ix[cl == c1][0], target=None)
-        sg = [p[i] for i in ix[cl == c1][1:]]
-        sg = np.unique([i for l in sg for i in l])  # flatten
+    # Group the leafs by cluster in one pass instead of masking `cl` per cluster
+    order = np.argsort(cl, kind="stable")
+    breaks = np.flatnonzero(np.r_[True, np.diff(cl[order]) != 0, True])
 
-        if len(sg) == 0:
+    to_merge = []
+    for i in range(len(breaks) - 1):
+        members = order[breaks[i] : breaks[i + 1]]
+        c1 = cl[members[0]]
+
+        # Single-leaf clusters span no part of the dendrogram - skip them
+        if len(members) < 2:
             continue
 
-        # The root for this cluster
-        root = max(sg)
+        # The root for this cluster is the lowest common ancestor of its leafs
+        root = _lca(members, parent)
 
-        dist_c1 = G.nodes[root].get("distance", 0)
+        dist_c1 = node_dist[root]
 
         # The cluster one above this one
-        try:
-            top = next(G.predecessors(root))
-        except StopIteration:
+        top = parent[root]
+        if top < 0:  # `root` is the root of the whole dendrogram
             continue
-        except BaseException:
-            raise
 
         # Distance between our original cluster and the closest
-        dist_top = G.nodes[top].get("distance", np.inf)
+        dist_top = node_dist[top]
 
-        # Distance for the neighbouring cluster
-        other = [s for s in G.successors(top) if s not in sg][0]
-        dist_c2 = G.nodes[other].get("distance", 0)
+        # Distance for the neighbouring cluster, i.e. the sibling of `root`
+        left, right = children[top]
+        other = right if left == root else left
+        dist_c2 = node_dist[other]
 
         # If merging this and the next cluster are very similar
-        th = 0.1
-        if (dist_top - dist_c1) <= th and (dist_top - dist_c2) < th:
+        if (dist_top - dist_c1) <= dist_thresh and (dist_top - dist_c2) < dist_thresh:
             # Get the index of the other cluster
-            sg_other = list(nx.dfs_postorder_nodes(G, other))
-            c2 = cl[[i for i in sg_other if i in ix]][0]
+            c2 = cl[_leftmost_leaf(other, children, n_obs)]
 
             if verbose:
                 print(
