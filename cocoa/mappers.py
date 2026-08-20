@@ -130,6 +130,7 @@ class BaseMapper:
             m[v] = m.get(v, []) + [k]
         return m
 
+    @mark_stale
     def add_dataset(self, *datasets, skip_existing=True):
         """Add dataset(s)."""
         for ds in datasets:
@@ -604,6 +605,51 @@ class GraphMapper(BaseMapper):
 
         return self
 
+    # Attributes produced by `.compile()` that are worth caching
+    _CACHED_ATTRS = ("mappings_", "graph_", "graph_full_", "spurious_edges_")
+
+    def _cache_identifier(self, ds_identifier):
+        """Build a hashable identifier for this mapper's datasets *and* settings.
+
+        Everything that changes the outcome of `.compile()` must go in here.
+        Note that graph processors are keyed by identity, so e.g. re-defining
+        the same lambda will (safely) miss the cache instead of returning a
+        mapping that was generated with a different processor.
+        """
+        return (
+            ds_identifier,
+            self.allow_indirect,
+            self.strict,
+            self._label_mode,
+            tuple(sorted({str(l) for l in self._bad_labels})),
+            tuple(sorted({str(l) for l in self._good_labels})),
+            tuple(
+                sorted(
+                    (str(k), tuple(sorted(str(s) for s in v)))
+                    for k, v in self._synonyms.items()
+                )
+            ),
+            tuple(self._graph_processors),
+        )
+
+    def _cache_payload(self):
+        """Collect the results of `.compile()` for caching."""
+        return {a: getattr(self, a) for a in self._CACHED_ATTRS if hasattr(self, a)}
+
+    def _restore_from_cache(self, payload):
+        """Copy cached results onto this instance.
+
+        Mutable containers are copied so that two mappers sharing a cache entry
+        don't alias (and hence mutate) each other's mappings. The graphs are
+        shared as-is - they are expensive to copy and meant to be read-only.
+        """
+        for attr, value in payload.items():
+            if isinstance(value, dict):
+                value = value.copy()
+            elif isinstance(value, list):
+                value = list(value)
+            setattr(self, attr, value)
+
     def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
@@ -629,23 +675,15 @@ class GraphMapper(BaseMapper):
         # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
         # Build a hashable identifier for this mapper instance
-        self_identifier = (
-            ds_identifier,
-            self.allow_indirect,
-            self.strict,
-            self._label_mode,
-        )
+        self_identifier = self._cache_identifier(ds_identifier)
         ds_string = ", ".join([d.type for d in datasets])
         if self_identifier in self._CACHE and not force_rebuild:
             self.report(
                 f"Using cached across-dataset mapping for {ds_string}.",
                 flush=True,
             )
-            # Copy the mappings to the current instance
-            other = self._CACHE[self_identifier]
-            for attr in ("mappings_", "graph_", "graph_full_", "spurious_edges_"):
-                if hasattr(other, attr):
-                    setattr(self, attr, getattr(other, attr))
+            self._restore_from_cache(self._CACHE[self_identifier])
+            self._stale = False
 
             return self
 
@@ -707,7 +745,7 @@ class GraphMapper(BaseMapper):
             self.spurious_edges_ = []  # no spurious edges in this case
 
             # Cache the results
-            self._CACHE[self_identifier] = self
+            self._CACHE[self_identifier] = self._cache_payload()
 
             self.report("Done.", flush=True)
             self._stale = False
@@ -798,9 +836,10 @@ class GraphMapper(BaseMapper):
             # Remove "dangling" labels that aren't actually necessary for connecting neurons
             # from different datasets.
             sg_keep_nodes = set()
-            neuron_nodes = [
+            # N.B. this is a set because we're doing a lot of membership tests below
+            neuron_nodes = {
                 n for n in sg.nodes if sg.nodes[n].get("type", None) == "neuron"
-            ]
+            }
             for s, paths in nx.all_pairs_all_shortest_paths(sg):
                 # Skip if the source is not a neuron
                 if s not in neuron_nodes:
@@ -812,11 +851,19 @@ class GraphMapper(BaseMapper):
                     # This avoids keeping labels that just connect two sets of neurons from the same dataset
                     if s_ds == sg.nodes[t].get("dataset", None):
                         continue
-                    # We only allow paths that go from neuron to neuron via labels, not via other neurons
+                    # We only allow paths that go from neuron to neuron via labels, not via other neurons.
+                    # N.B. `paths[t]` contains *all* shortest paths to `t` and we have to drop the
+                    # offending paths individually: if we dropped `t` as soon as any one of its
+                    # shortest paths hops via a neuron we would also throw away the perfectly
+                    # legitimate label-only paths of the same length.
+                    t_paths = paths[t]
                     if not self.allow_indirect:
-                        if any(n in neuron_nodes for p in paths[t] for n in p[1:-1]):
-                            continue
-                    sg_keep_nodes.update([i for p in paths[t] for i in p])
+                        t_paths = [
+                            p
+                            for p in t_paths
+                            if not any(n in neuron_nodes for n in p[1:-1])
+                        ]
+                    sg_keep_nodes.update([i for p in t_paths for i in p])
 
             if len(sg_keep_nodes) != len(sg.nodes):
                 sg = sg.subgraph(sg_keep_nodes)
@@ -969,7 +1016,7 @@ class GraphMapper(BaseMapper):
         self.graph_full_ = G  # keep the full graph for inspection
 
         # Cache the results
-        self._CACHE[self_identifier] = self
+        self._CACHE[self_identifier] = self._cache_payload()
 
         self.report(
             f"  Found {len(set(self.mappings_.values())):,} unique labels covering {len(self.mappings_):,} neurons.",

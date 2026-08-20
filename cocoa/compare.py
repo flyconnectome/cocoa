@@ -12,7 +12,7 @@ from itertools import combinations
 from .datasets.core import DataSet
 from .datasets.ds_utils import _add_types
 from .utils import make_iterable, printv
-from .mappers import GraphMapper, BaseMapper
+from .mappers import GraphMapper, BaseMapper, extract_mappings
 
 
 __all__ = ["Comparison"]
@@ -153,8 +153,14 @@ class Comparison:
         # the `dataset.neurons` (i.e. we didn't select the exact same pool of neurons in all datasets).
 
         # 1. Collect all labels per dataset
+        # N.B. mappings are keyed as "{dataset}:{id}" but `ds.neurons` are raw IDs, so
+        # we have to strip the prefix before we can look them up.
         labels_per_dataset = [
-            {self.mappings_.get(i, i) for i in ds.neurons} for ds in self.datasets
+            {mappings.get(i, i) for i in ds.neurons}
+            for mappings, ds in zip(
+                [extract_mappings(self.mappings_, ds) for ds in self.datasets],
+                self.datasets,
+            )
         ]
         # 2. Intersect
         labels_keep = set.intersection(*labels_per_dataset)
@@ -177,7 +183,7 @@ class Comparison:
             # Add types based on the mappings
             adj = _add_types(
                 ds.adj_.copy(),
-                types=self.mappings_filtered_,
+                types=extract_mappings(self.mappings_filtered_, ds),
                 col=("pre", "post"),
                 sides=None,
                 sides_rel=False,

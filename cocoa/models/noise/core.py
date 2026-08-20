@@ -7,7 +7,7 @@ from tqdm.auto import trange
 from ..datasets.core import DataSet
 from ..datasets.ds_utils import _add_types
 from ..utils import printv
-from ..mappers import GraphMapper, BaseMapper
+from ..mappers import GraphMapper, BaseMapper, extract_mappings
 
 
 __all__ = ["GroundTruthModel"]
@@ -153,8 +153,12 @@ class GroundTruthModel:
                 if not issubclass(mapper, BaseMapper):
                     raise TypeError(f'`mapper` must be a Mapper, got "{mapper}"')
                 mapper = mapper()
-            self.mapper_ = mapper.add_dataset(self.dataset).compile()
-            self.mappings_ = self.mapper_.mappings_
+            self.mapper_ = mapper.add_dataset(self.dataset)
+            # N.B. mappings are keyed as "{dataset}:{id}" but the edge list uses raw
+            # IDs, so we have to strip the prefix before we can use them here.
+            self.mappings_ = extract_mappings(
+                self.mapper_.get_mappings(), self.dataset
+            )
 
             self.edges_ = _add_types(
                 self.edges_,
