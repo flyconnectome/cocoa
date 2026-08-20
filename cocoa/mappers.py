@@ -59,6 +59,7 @@ and uses the connected components to assign labels that map between datasets.
 """
 
 import os
+import uuid
 import itertools
 
 import networkx as nx
@@ -510,10 +511,14 @@ class GraphMapper(BaseMapper):
                     by looking for matching labels. If True, will only match labels
                     that are meant to be a match - e.g. FlyWire "cell_type" to
                     maleCNS "flywire_type" or FlyWire "male_cns_type" to male CNS "type".
-    labels :        "first" | "all"
-                    Determines how the label for a group of neurons is chosen:
+    labels :        "first" | "all" | "id" | "random"
+                    Determines how the label for a group of cross-matched neurons is chosen:
                       - "first" (default): the alphabetically first label in the group is used
                       - "all": all labels in the group are used, separated by commas
+                      - "id": the lowest ID of the neurons in the group is used; non-unique
+                        IDs are ignored
+                      - "random": each group gets a random UUID; this is not deterministic
+                        across runs!
     verbose :       bool
                     If True, will print progress messages.
 
@@ -533,7 +538,7 @@ class GraphMapper(BaseMapper):
         labels="first",
         verbose=True,
     ):
-        assert labels in ("first", "all"), "labels must be either 'first' or 'all'."
+        assert labels in ("first", "all", "random", "id"), "labels must be either 'first' or 'all'."
 
         self.strict = strict
         self._synonyms = {}
@@ -895,6 +900,10 @@ class GraphMapper(BaseMapper):
             elif self._label_mode == "first":
                 # Sort such that we prefer shorter, non-compound labels
                 new_label = sorted(ccn_labels, key=lambda x: (len(x.split(",")), x))[0]
+            elif self._label_mode in ("random", "id"):
+                # For mode "id", we will later convert to lowest IDs when we can actually
+                # check for duplicated IDs
+                new_label = uuid.uuid4().hex
             else:
                 raise ValueError(f"Unknown label mode: {self._label_mode}")
 
@@ -928,6 +937,30 @@ class GraphMapper(BaseMapper):
                 f"  Manually added {len(self._good_labels)} good labels to {n_good} neurons.",
                 flush=True,
             )
+
+        if self._label_mode == "id":
+            ids, counts = np.unique([int(k.split(":")[1]) for k in mappings], return_counts=True)
+            duplicated_ids = ids[counts > 1]
+            mappings_inv = {}
+            for k, v in mappings.items():
+                if v not in mappings_inv:
+                    mappings_inv[v] = []
+                mappings_inv[v].append(k)
+
+            new_mappings = {}
+            for k, v in mappings_inv.items():
+                unique_ids = [int(i.split(":")[1]) for i in v]
+                unique_ids = [i for i in unique_ids if i not in duplicated_ids]
+
+                if not unique_ids:
+                    # If all IDs are duplicated, fall back to the random UUID
+                    new_label = k
+                else:
+                    # Otherwise use the lowest ID
+                    new_label = str(min(unique_ids))
+                for id in v:
+                    new_mappings[id] = new_label
+            mappings = new_mappings
 
         # Store the results
         self.mappings_ = mappings
