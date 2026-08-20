@@ -14,3 +14,9 @@ networkx
 tanglegram @ git+https://github.com/schlegelp/tanglegram@master
 clio-py @ git+https://github.com/schlegelp/clio-py@main
 ipywidgets  # apparently tqdm complains if this isn't installed and we're in a Jupyter environment
+# Optional extras. N.B. lines starting with '#' are stripped by setup.py, so
+# anything listed here would otherwise become a hard requirement.
+#
+# The optional extras are declared in setup.py (`extras_require`); install them
+# with `pip install cocoa[knn]` (pynndescent, for the KNN search) or
+# `pip install cocoa[graph]` (scikit-network, for the Paris algorithm).
