@@ -33,14 +33,14 @@ class JaneliaDataSet(DataSet, ABC):
                 value = Path(value).expanduser()
                 if not value.is_file():
                     raise ValueError(f'"{self.cn_object}" is not a valid file')
-                self.cn_object = pd.read_feather(value)
+                self._cn_object = pd.read_feather(value)
             elif isinstance(value, pd.DataFrame):
                 self._cn_object = value
             else:
                 raise ValueError("`cn_object` must be a path, a DataFrame or `None`")
 
             # Make sure we have the right column names: "bodyId_pre", "bodyId_post", "roi", "weight"
-            self.cn_object = self.cn_object.rename(
+            self._cn_object = self._cn_object.rename(
                 columns={"body_pre": "bodyId_pre", "body_post": "bodyId_post"}
             )
         else:

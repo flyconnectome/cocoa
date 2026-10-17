@@ -8,6 +8,7 @@ from ..distance import calculate_distance
 
 
 class DataSet(ABC):
+
     def __init__(self, label):
         self.label = label
         self.neurons = np.zeros((0,), dtype=np.int64)
@@ -17,7 +18,7 @@ class DataSet(ABC):
 
     def __repr__(self):
         props = f"label={self.label};neurons={len(self.neurons)}"
-        for prop in ("meta_source", ):
+        for prop in ("meta_source",):
             if hasattr(self, prop):
                 props += f";{prop}={getattr(self, prop)}"
         return f"class {self.type} <{props}>"
@@ -52,12 +53,20 @@ class DataSet(ABC):
             raise ValueError("No neuroglancer source defined for this dataset.")
         return self._neuroglancer_source
 
+    @neuroglancer_source.setter
+    def neuroglancer_source(self, value):
+        self._neuroglancer_source = value
+
     @abstractmethod
     def add_neurons(self, x, **kwargs):
         pass
 
     @abstractmethod
     def _parse_ids(self, x, **kwargs):
+        pass
+
+    @abstractmethod
+    def copy(self):
         pass
 
     @abstractmethod
@@ -167,7 +176,19 @@ class DataSet(ABC):
         # Compile up- and downstream connectivity
         to_use = list(set(edges[["pre", "post"]].values.flatten().tolist()))
         if self.use_types and drop_unlabeled:
-            to_use = np.array(to_use)[self.label_exists(to_use)]
+            if self.use_sides:
+                def try_remove_side(x):
+                    if not isinstance(x, str):
+                        return x
+                    for side in ("_L", "_R", "_C", "_M", "_left", "_right", "_center"):
+                        if x.endswith(side):
+                            return x[:-len(side)]
+                    return x
+                to_use_no_side = np.array([try_remove_side(x) for x in to_use])
+            else:
+                to_use_no_side = to_use
+
+            to_use = np.array(to_use)[self.label_exists(to_use_no_side)]
 
             is_up = edges.post.isin(self.neurons)
             is_down = edges.pre.isin(self.neurons)
@@ -184,6 +205,12 @@ class DataSet(ABC):
         up = adj.reindex(columns=self.neurons, index=to_use)
 
         self.vect_ = pd.concat((down, up.T), axis=1).fillna(0).astype(np.uint32)
+
+        # Make columns a multi-index
+        self.vect_.columns = pd.MultiIndex.from_tuples(
+            [( "downstream", col) for col in down.columns]
+            + [( "upstream", col) for col in up.index]
+        )
 
         # Calculate fraction of connectivity used for the observation vector
         syn_counts_after = self.vect_.sum(axis=1)

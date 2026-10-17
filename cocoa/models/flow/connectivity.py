@@ -25,8 +25,6 @@ class EffectiveConnectivity:
                     to a sparse matrix in COO format.
     labels :        iterable
                     List of labels for the nodes in the network.
-    max_iter :      int
-                    Maximum number of iterations to run the effective connectivity.
 
     """
 

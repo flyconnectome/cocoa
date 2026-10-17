@@ -24,6 +24,8 @@ __all__ = ["MaleVNC"]
 
 VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
 
+_DEFAULT_NEUROGLANCER_SOURCE = "precomputed://gs://manc-seg-v1p2/manc-seg-v1.2"
+
 
 class MaleVNC(JaneliaDataSet):
     """Male Adult Nerve Cord (MANC) dataset.
@@ -42,7 +44,7 @@ class MaleVNC(JaneliaDataSet):
     backfill_types :    str | iterable, optional
                         A list of columns to use (in order) to backfill the `type`
                         column. Ignored if ``use_types=False``. If `True`, will use
-                        all available columns.
+                        all available type columns.
     exclude_autapses :  bool
                         Whether to exclude autapses from the connectivity vectors.
     use_side :          bool | 'relative'
@@ -71,6 +73,7 @@ class MaleVNC(JaneliaDataSet):
 
     _flybrains_space = "JRCFIB2022Mraw"
     _type_columns = ("type",)
+    _color = "blue"
 
     def __init__(
         self,
@@ -116,6 +119,8 @@ class MaleVNC(JaneliaDataSet):
             self.rois = _parse_neuprint_roi(rois, client=self.neuprint_client)
         else:
             self.rois = None
+
+        self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
     @property
     def neuprint_client(self):
@@ -180,14 +185,13 @@ class MaleVNC(JaneliaDataSet):
 
         return x
 
-    def clear_cache(self):
+    @classmethod
+    def clear_cache(cls):
         """Clear cached in-memory data (e.g. annotations). Does not clear data cached on disk."""
         _get_manc_meta.cache_clear()
         _get_manc_types.cache_clear()
         _get_manc_meta.cache_clear()
         print("Cleared cached male VNC data.")
-
-        return self
 
     def get_annotations(self):
         """Return annotations."""

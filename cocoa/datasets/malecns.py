@@ -38,7 +38,9 @@ CENTRAL_BRAIN_CLASSES = (
     "descending",
 )
 
+
 VNC_INTRINSIC_CLASSES = ("intrinsic_neuron", "ascending")
+_DEFAULT_NEUROGLANCER_SOURCE = "precomputed://gs://flyem-male-cns/v0.9/segmentation"
 
 
 class MaleCNS(JaneliaDataSet):
@@ -58,7 +60,7 @@ class MaleCNS(JaneliaDataSet):
     backfill_types :    str | iterable, optional
                         A list of columns to use (in order) to backfill the `type`
                         column. Ignored if ``use_types=False``. If `True`, will use
-                        all available columns.
+                        all available type columns.
     exclude_bad_types : bool
                         Whether to exclude known bad types such as "KC" or "FB".
     exclude_autapses :  bool
@@ -89,6 +91,7 @@ class MaleCNS(JaneliaDataSet):
 
     _flybrains_space = "JRCFIB2022Mraw"
     _type_columns = ("type", "flywireType", "mancType", "hemibrainType")
+    _color = "cyan"
 
     def __init__(
         self,
@@ -138,6 +141,7 @@ class MaleCNS(JaneliaDataSet):
             )
         self.backfill_types = backfill_types
         self.rois = rois
+        self._neuroglancer_source = _DEFAULT_NEUROGLANCER_SOURCE
 
     @property
     def neuprint_client(self):
@@ -267,14 +271,13 @@ class MaleCNS(JaneliaDataSet):
 
         return x
 
-    def clear_cache(self):
+    @classmethod
+    def clear_cache(cls):
         """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
         _get_mcns_meta.cache_clear()
         _get_mcns_types.cache_clear()
         _get_mcns_meta.cache_clear()
         print("Cleared cached male CNS data.")
-
-        return self
 
     def get_annotations(self, source=None, clear_cache=False):
         """Return annotations.

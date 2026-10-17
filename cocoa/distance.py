@@ -12,8 +12,9 @@ DISTS_DTYPE = np.float32
 VECT_DTYPE = np.uint16
 
 
-def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verbose=True):
-    assert metric in ("cosine", "Euclidean")
+def calculate_distance(
+    vect, augment=None, metric="cosine", n_batches=None, verbose=True
+):
 
     printv(f"Calculating {metric} distances... ", verbose=verbose, end="", flush=True)
 
@@ -28,13 +29,19 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
         col_ix = 0
         printv("\n", verbose=verbose, end="")
         for i, batch1 in enumerate(batches):
-            printv(f"  Batch {i+1}/{n_batches}... ", verbose=verbose, end="", flush=True)
+            printv(
+                f"  Batch {i + 1}/{n_batches}... ", verbose=verbose, end="", flush=True
+            )
             for j, batch2 in enumerate(batches):
                 if metric == "Euclidean":
-                    this_dists = cdist(batch1, batch2).astype(DISTS_DTYPE, copy=False).round(6)
+                    this_dists = (
+                        cdist(batch1, batch2).astype(DISTS_DTYPE, copy=False).round(6)
+                    )
                 elif metric == "cosine":
-                    this_dists = cosine_similarity(coo_array(batch1), coo_array(batch2), dense_output=True)
-                    # Turn into distance inplace
+                    this_dists = cosine_similarity(
+                        coo_array(batch1), coo_array(batch2), dense_output=True
+                    )
+                    # Turn into distances inplace
                     np.subtract(1, this_dists, out=this_dists)
 
                 # Fill the distance matrix
@@ -46,17 +53,10 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
                 col_ix += this_dists.shape[1]
             row_ix += this_dists.shape[0]
             col_ix = 0
-            printv("Done.", verbose=verbose)
+            printv("Done.", verbose=verbose, flush=True)
 
         np.fill_diagonal(dists, 0)
         printv("All Done.", verbose=verbose)
-    elif metric == "Euclidean":
-        dists = (
-            squareform(pdist(vect, checks=False))
-            .astype(DISTS_DTYPE, copy=False)
-            .round(6)
-        )
-        printv("Done.", verbose=verbose)
     elif metric == "cosine":
         # Note that we're converting to sparse array here. That's because
         # the vector (if it's large) is typically sparse (<1% filled)
@@ -73,7 +73,14 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
 
         # Make sure diagonal is actually zero
         np.fill_diagonal(dists, 0)
-        printv("Done.", verbose=verbose)
+        printv("Done.", verbose=verbose, flush=True)
+    else:
+        dists = (
+            squareform(pdist(vect, metric=metric.lower()), checks=False)
+            .astype(DISTS_DTYPE, copy=False)
+            .round(6)
+        )
+        printv("Done.", verbose=verbose, flush=True)
 
     # Change columns to "type, ds" (index remains just "id")
     if isinstance(vect, pd.DataFrame):
@@ -87,7 +94,7 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
         miss = dists.index[~np.isin(dists.index, augment.index)]
         if any(miss):
             raise ValueError(
-                f"{len(miss)} IDs are missing from the " "augmentation matrix."
+                f"{len(miss)} IDs are missing from the augmentation matrix."
             )
         if round(augment.values[0, 0], 2) != 0:
             print(
@@ -102,7 +109,7 @@ def calculate_distance(vect, augment=None, metric="cosine", n_batches=None, verb
             verbose=verbose,
         )
         dists = (dists + augment.loc[dists.index, dists.index].values) / 2
-        printv("Done", verbose=verbose)
+        printv("Done", verbose=verbose, flush=True)
 
     return dists
 
@@ -133,10 +140,6 @@ def cosine_similarity(X, Y=None, dense_output=False, dtype=np.float32):
     else:
         Y_normalized = X_normalized
 
-
     K = safe_sparse_dot(X_normalized, Y_normalized.T, dense_output=dense_output)
-
-    return K
-
 
     return K

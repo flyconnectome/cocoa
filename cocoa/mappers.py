@@ -59,6 +59,8 @@ and uses the connected components to assign labels that map between datasets.
 """
 
 import os
+import uuid
+import functools
 import itertools
 
 import networkx as nx
@@ -66,6 +68,7 @@ import numpy as np
 import pandas as pd
 
 from numbers import Number
+from collections import Counter
 from abc import abstractmethod
 from joblib import Parallel, delayed
 
@@ -90,6 +93,35 @@ def mark_stale(func):
         return res
 
     return wrapper
+
+
+def with_verbosity(func):
+    """Decorator to let a `verbose` keyword temporarily override `self.verbose`."""
+
+    @functools.wraps(func)
+    def wrapper(self, *args, verbose=None, **kwargs):
+        old_verbose = self.verbose
+        if verbose is not None:
+            self.verbose = verbose
+        try:
+            return func(self, *args, **kwargs)
+        finally:
+            self.verbose = old_verbose
+
+    return wrapper
+
+
+def _split_prefixed_id(key):
+    """Split a "{dataset}:{id}" mapping key into its parts.
+
+    Returns a `(dataset_type, id)` tuple where the ID is cast to an integer if
+    possible - that's what e.g. `DataSet.get_sides()` is keyed by.
+    """
+    dataset, _, id = key.partition(":")
+    try:
+        return dataset, int(id)
+    except ValueError:
+        return dataset, id
 
 
 class BaseMapper:
@@ -129,6 +161,7 @@ class BaseMapper:
             m[v] = m.get(v, []) + [k]
         return m
 
+    @mark_stale
     def add_dataset(self, *datasets, skip_existing=True):
         """Add dataset(s)."""
         for ds in datasets:
@@ -180,7 +213,7 @@ class BaseMapper:
         if not strip_prefix:
             return self.mappings_
         else:
-            return {int(k.split(":")[1]): v for k, v in self.mappings_.items()}
+            return {_split_prefixed_id(k)[1]: v for k, v in self.mappings_.items()}
 
     def get_dataset_mappings(self, dataset):
         """Get mappings for the given dataset.
@@ -219,79 +252,60 @@ class BaseMapper:
                  DataFrame with label counts per dataset.
 
         """
-        # TODOs:
-        # - split by side
         if not hasattr(self, "mappings_") or self._stale:
             self.compile()
 
         # Invert the mappings
-        labels = {l: [] for l in set(self.mappings_.values())}
-        for k, v in self.mappings_.items():
-            labels[v].append(k)
+        # N.B. the keys are "{dataset}:{id}" - we must not look these up in `graph_`
+        # because that graph contains collapsed neuron groups ("group_0", ...), not
+        # individual neurons.
+        mappings = [(_split_prefixed_id(k), v) for k, v in self.mappings_.items()]
 
         counts = pd.DataFrame()
-        counts["label"] = list(labels)
+        counts["label"] = list(set(self.mappings_.values()))
 
-        for ds in self.datasets:
+        # Track which column(s) belong to which dataset so we don't have to
+        # guess from the column names further down
+        ds_columns = {}
+        # Only one dataset per type - same as in `.compile()`
+        for ds in self._unique_datasets:
+            ds_columns[ds.label] = []
             if not split_sides:
-                this_counts = []
-                for label in counts.label.values:
-                    this_counts.append(
-                        len(
-                            [
-                                l
-                                for l in labels[label]
-                                if self.graph_.nodes[l].get("dataset", None) == ds.label
-                            ]
-                        )
-                    )
-                counts[ds.label] = this_counts
+                n = Counter(l for (t, _), l in mappings if t == ds.type)
+                counts[ds.label] = [n[l] for l in counts.label]
+                ds_columns[ds.label].append(ds.label)
             else:
-                # Get sides for all neurons
+                # Get sides for all neurons; these are keyed by raw (unprefixed) ID
                 sides = ds.get_sides(None)
+                n = Counter(
+                    (l, sides.get(i, None)) for (t, i), l in mappings if t == ds.type
+                )
                 for side in set(sides.values()):
                     # Skip side if unclear
                     if side in (None, "", np.nan, "na"):
                         continue
 
-                    this_counts = []
-                    for label in counts.label.values:
-                        this_counts.append(
-                            len(
-                                [
-                                    l
-                                    for l in labels[label]
-                                    if self.graph_.nodes[l].get("dataset", None)
-                                    == ds.label
-                                    and sides.get(l, None) == side
-                                ]
-                            )
-                        )
-                    counts[f"{ds.label}_{side}"] = this_counts
+                    col = f"{ds.label}_{side}"
+                    counts[col] = [n[(l, side)] for l in counts.label]
+                    ds_columns[ds.label].append(col)
 
         if label_suspicious:
             # Check for labels that are suspiciously different between datasets
             counts["suspicious"] = False
-            for ds1 in self.datasets:
-                ds1_cols = [c for c in counts.columns if ds1.label in c]
-                for ds2 in self.datasets:
-                    if ds1 == ds2:
+            is_center = {
+                c: c.endswith(("_C", "_M", "_center"))
+                for cols in ds_columns.values()
+                for c in cols
+            }
+            for ds1, ds2 in itertools.permutations(ds_columns, 2):
+                for c1, c2 in itertools.product(ds_columns[ds1], ds_columns[ds2]):
+                    # Make sure we don't compare e.g. "center" with "left"
+                    if is_center[c1] != is_center[c2]:
                         continue
-                    ds2_cols = [c for c in counts.columns if ds2.label in c]
-                    for c1, c2 in itertools.product(ds1_cols, ds2_cols):
-                        # Make sure we don't compare e.g. "center" with "left"
-                        c1_is_cent = any(
-                            c1.endswith(f"_{s}") for s in ("C", "M", "center")
-                        )
-                        c2_is_cent = any(
-                            c2.endswith(f"_{s}") for s in ("C", "M", "center")
-                        )
-                        if c1_is_cent != c2_is_cent:
-                            continue
-                        ratio = counts[[c1, c2]].min(axis=1) / counts[[c1, c2]].max(
-                            axis=1
-                        )
-                        counts.loc[ratio < 0.5, "suspicious"] = True
+                    ratio = counts[[c1, c2]].min(axis=1) / counts[[c1, c2]].max(
+                        axis=1
+                    )
+                    counts.loc[ratio < 0.5, "suspicious"] = True
 
         return counts
 
@@ -363,17 +377,27 @@ class BaseMapper:
             if not isinstance(ds, DataSet) and not issubclass(ds, DataSet):
                 raise TypeError(f'Expected dataset(s), got "{type(ds)}"')
 
+    @property
+    def _unique_datasets(self):
+        """Datasets with only one per dataset type.
+
+        Having e.g. two FlyWire datasets is redundant because they will have
+        the same labels.
+        """
+        return list({type(d): d for d in self.datasets}.values())
+
     @mark_stale
     def clear_cache(self):
         """Clear mappings."""
         self._CACHE.clear()
 
     @abstractmethod
-    def compile(self, verbose=True):
+    def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
         This method must:
-         - minimally accept a `verbose` keyword
+         - be decorated with `@with_verbosity` so that it accepts a `verbose`
+           keyword which, if not `None`, overrides `self.verbose` for the call
          - return a `{id: label}` dictionary
         """
         pass
@@ -399,6 +423,7 @@ class SimpleMapper(BaseMapper):
     # Class-level cache for mappings
     _CACHE = {}
 
+    @with_verbosity
     def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
@@ -408,8 +433,8 @@ class SimpleMapper(BaseMapper):
                         By default, Mappers cache mappings between datasets. Use this
                         parameter to ignore any cached data and force a rebuild. Also
                         clears the cache for the individual datasets.
-        verbose :       bool
-                        If True, will print progress messages.
+        verbose :       bool, optional
+                        If provided, overrides `self.verbose` for this call only.
 
         """
         if not self.datasets:
@@ -419,7 +444,7 @@ class SimpleMapper(BaseMapper):
         # FlyWire datasets is redundant because they will have the same labels.
         # In the future, we could implement "hemispheres", i.e. FlyWire left vs right
         # but the assumption is that the primary labels should already be the same.
-        datasets = list({type(d): d for d in self.datasets}.values())
+        datasets = self._unique_datasets
 
         # Check if we already have a mapping for this combination of datasets
         ds_identifier = tuple(sorted([d.type for d in datasets]))
@@ -510,10 +535,14 @@ class GraphMapper(BaseMapper):
                     by looking for matching labels. If True, will only match labels
                     that are meant to be a match - e.g. FlyWire "cell_type" to
                     maleCNS "flywire_type" or FlyWire "male_cns_type" to male CNS "type".
-    labels :        "first" | "all"
-                    Determines how the label for a group of neurons is chosen:
+    labels :        "first" | "all" | "id" | "random"
+                    Determines how the label for a group of cross-matched neurons is chosen:
                       - "first" (default): the alphabetically first label in the group is used
                       - "all": all labels in the group are used, separated by commas
+                      - "id": the lowest ID of the neurons in the group is used; non-unique
+                        IDs are ignored
+                      - "random": each group gets a random UUID; this is not deterministic
+                        across runs!
     verbose :       bool
                     If True, will print progress messages.
 
@@ -533,7 +562,7 @@ class GraphMapper(BaseMapper):
         labels="first",
         verbose=True,
     ):
-        assert labels in ("first", "all"), "labels must be either 'first' or 'all'."
+        assert labels in ("first", "all", "random", "id"), "labels must be either 'first' or 'all'."
 
         self.strict = strict
         self._synonyms = {}
@@ -599,6 +628,108 @@ class GraphMapper(BaseMapper):
 
         return self
 
+    # Attributes produced by `.compile()` that are worth caching
+    _CACHED_ATTRS = ("mappings_", "graph_", "graph_full_", "graph_grp_")
+
+    def _dataset_graph(self, ds):
+        """Compile the label graph for a single dataset and prep it for merging.
+
+        This is shared between the single- and the multi-dataset code paths so
+        that both produce graphs with the same node naming and attributes.
+        """
+        # Compile the label graph for this dataset
+        G = ds.compile_label_graph(which_neurons="all", strict=self.strict)
+
+        # Drop bad labels from the graph (if not present will be silently ignored)
+        G.remove_nodes_from(self._bad_labels)
+
+        # We may run into issues if the same ID exists in multiple datasets (e.g. MaleCNS & MaleVNC)
+        # To account for that, we will prefix node IDs with the dataset type - e.g. "MaleCNS:12345"
+        nx.relabel_nodes(
+            G,
+            {n: f"{ds.type}:{n}" for n in G.nodes if G.nodes[n].get("type", None)},
+            copy=False,
+        )
+
+        # Here we set e.g. "FWR=True" so we can later identify which dataset(s)
+        # a node belongs to. N.B. this can be multiple in case of labels!
+        nx.set_node_attributes(G, True, ds.label)
+        # Also set a normal node attribute for the neurons in this dataset
+        # (this is mainly for convenience when inspecting the graph)
+        neurons = [n for n in G.nodes if G.nodes[n].get("type", None) == "neuron"]
+        nx.set_node_attributes(G, {n: ds.label for n in neurons}, name="dataset")
+
+        # Track how many neurons from this dataset point towards a given label
+        n_in = {}
+        for n in neurons:
+            for nn in G.neighbors(n):
+                n_in[nn] = n_in.get(nn, 0) + 1
+        nx.set_node_attributes(G, n_in, name=f"{ds.label}_in")
+
+        return G
+
+    def _apply_processors(self, G):
+        """Run the registered graph processors over `G`."""
+        for proc in self._graph_processors:
+            G = proc(G)
+            if not isinstance(G, nx.Graph):
+                raise ValueError(f"Graph processor must return a graph, got {type(G)}")
+        return G
+
+    def _apply_synonyms(self, G):
+        """Add manually defined synonyms to `G` (in place)."""
+        for label, synonyms in self._synonyms.items():
+            for syn in synonyms:
+                # Because the graph is directed we have to add the edge both ways
+                if (syn, label) not in G.edges:
+                    G.add_edge(syn, label, weight=0)
+                if (label, syn) not in G.edges:
+                    G.add_edge(label, syn, weight=0)
+        return G
+
+    def _cache_identifier(self, ds_identifier):
+        """Build a hashable identifier for this mapper's datasets *and* settings.
+
+        Everything that changes the outcome of `.compile()` must go in here.
+        Note that graph processors are keyed by identity, so e.g. re-defining
+        the same lambda will (safely) miss the cache instead of returning a
+        mapping that was generated with a different processor.
+        """
+        return (
+            ds_identifier,
+            self.allow_indirect,
+            self.strict,
+            self._label_mode,
+            tuple(sorted({str(l) for l in self._bad_labels})),
+            tuple(sorted({str(l) for l in self._good_labels})),
+            tuple(
+                sorted(
+                    (str(k), tuple(sorted(str(s) for s in v)))
+                    for k, v in self._synonyms.items()
+                )
+            ),
+            tuple(self._graph_processors),
+        )
+
+    def _cache_payload(self):
+        """Collect the results of `.compile()` for caching."""
+        return {a: getattr(self, a) for a in self._CACHED_ATTRS if hasattr(self, a)}
+
+    def _restore_from_cache(self, payload):
+        """Copy cached results onto this instance.
+
+        Mutable containers are copied so that two mappers sharing a cache entry
+        don't alias (and hence mutate) each other's mappings. The graphs are
+        shared as-is - they are expensive to copy and meant to be read-only.
+        """
+        for attr, value in payload.items():
+            if isinstance(value, dict):
+                value = value.copy()
+            elif isinstance(value, list):
+                value = list(value)
+            setattr(self, attr, value)
+
+    @with_verbosity
     def compile(self, force_rebuild=False):
         """Build mappings between datasets.
 
@@ -608,8 +739,8 @@ class GraphMapper(BaseMapper):
                         By default, Mappers cache mappings between datasets. Use this
                         parameter to ignore any cached data and force a rebuild. Also
                         clears the cache for the individual datasets.
-        verbose :       bool
-                        If True, will print progress messages.
+        verbose :       bool, optional
+                        If provided, overrides `self.verbose` for this call only.
 
         """
         if not self.datasets:
@@ -619,28 +750,20 @@ class GraphMapper(BaseMapper):
         # FlyWire datasets is redundant because they will have the same labels.
         # In the future, we could implement "hemispheres", i.e. FlyWire left vs right
         # but the assumption - right or wrong - is that the primary labels should already be the same.
-        datasets = list({type(d): d for d in self.datasets}.values())
+        datasets = self._unique_datasets
 
         # Check if we already have a mapping for this combination of datasets and settings
         ds_identifier = tuple(sorted([d.type for d in datasets]))
         # Build a hashable identifier for this mapper instance
-        self_identifier = (
-            ds_identifier,
-            self.allow_indirect,
-            self.strict,
-            self._label_mode,
-        )
+        self_identifier = self._cache_identifier(ds_identifier)
         ds_string = ", ".join([d.type for d in datasets])
         if self_identifier in self._CACHE and not force_rebuild:
             self.report(
                 f"Using cached across-dataset mapping for {ds_string}.",
                 flush=True,
             )
-            # Copy the mappings to the current instance
-            other = self._CACHE[self_identifier]
-            for attr in ("mappings_", "graph_", "graph_full_", "spurious_edges_"):
-                if hasattr(other, attr):
-                    setattr(self, attr, getattr(other, attr))
+            self._restore_from_cache(self._CACHE[self_identifier])
+            self._stale = False
 
             return self
 
@@ -661,48 +784,47 @@ class GraphMapper(BaseMapper):
                 flush=True,
             )
             ds = datasets[0]
-            # Generate a graph for the dataset
-            G = ds.compile_label_graph(which_neurons="all", strict=self.strict)
+            # Generate a graph for the dataset. N.B. this prefixes the neuron nodes
+            # as "{dataset}:{id}" - same as in the multi-dataset case below.
+            G = self._dataset_graph(ds)
 
-            # Drop bad labels from the graph (if not present will be silently ignored)
-            G.remove_nodes_from(self._bad_labels)
-
-            for proc in self._graph_processors:
-                G = proc(G)
-                if not isinstance(G, nx.Graph):
-                    raise ValueError(
-                        f"Graph processor must return a graph, got {type(G)}"
-                    )
+            # Run graph processors & add manual synonyms
+            G = self._apply_processors(G)
+            self._apply_synonyms(G)
 
             mappings = {}
             keep_edges = set()
             for n in ds.get_all_neurons():
+                node = f"{ds.type}:{n}"
+                # Neurons can go missing if e.g. their ID was listed as a bad label
+                if node not in G:
+                    continue
                 # Get neighbors and sort by in-degree of the label
                 # In addition we're also de-prioritizing `group` and `instance` based labels
                 neighbors = sorted(
-                    list(G.neighbors(n)),
+                    G.neighbors(node),
                     key=lambda x: (G.in_degree[x], "group" in x or "instance" in x),
                 )
                 if not neighbors:
                     continue
-                # Not strictly necessary since we're only having one dataset but we're tracking
-                # neurons as "{dataset}:{id}" to be consistent with the multi-dataset case
-                mappings[f"{ds.type}:{n}"] = neighbors[0]  # use the most granular label
-                keep_edges.add((n, neighbors[0]))
+                mappings[node] = neighbors[0]  # use the most granular label
+                keep_edges.add((node, neighbors[0]))
 
             # Subset the graph. N.B. we're using subgraph_view to make sure we
             # get all the nodes but only a subset of the edges
             G_trimmed = nx.subgraph_view(
                 G, filter_edge=lambda e1, e2: (e1, e2) in keep_edges
-            ).copy()
+            )
 
-            # Store the mappings and the graph
+            # Store the mappings and the graphs. N.B. `graph_` must be undirected
+            # because `get_subgraph()` runs connected components on it.
             self.mappings_ = mappings
-            self.graph_ = G_trimmed
-            self.spurious_edges_ = []  # no spurious edges in this case
+            self.graph_ = G_trimmed.to_undirected()
+            self.graph_grp_ = collapse_neuron_nodes(G).to_undirected()
+            self.graph_full_ = G
 
             # Cache the results
-            self._CACHE[self_identifier] = self
+            self._CACHE[self_identifier] = self._cache_payload()
 
             self.report("Done.", flush=True)
             self._stale = False
@@ -718,55 +840,16 @@ class GraphMapper(BaseMapper):
         # have a concept of primary, secondary, etc. labels where the primary label is
         # the most specific label and subsequent labels are either just synonyms or less
         # granular labels from other dataset
-        graphs = []
-        for ds in datasets:
-            # Compile the label graph for this dataset
-            G = ds.compile_label_graph(which_neurons="all", strict=self.strict)
-
-            # Drop bad labels from the graph (if not present will be silently ignored)
-            G.remove_nodes_from(self._bad_labels)
-
-            # We may run into issues if the same ID exists in multiple datasets (e.g. MaleCNS & MaleVNC)
-            # To account for that, we will prefix node IDs with the dataset type - e.g. "MaleCNS:12345"
-            nx.relabel_nodes(
-                G,
-                {n: f"{ds.type}:{n}" for n in G.nodes if G.nodes[n].get("type", None)},
-                copy=False,
-            )
-
-            # Here we set e.g. "FWR=True" so we can later identify which dataset(s)
-            # a node belongs to. N.B. this can be multiple in case of labels!
-            nx.set_node_attributes(G, True, ds.label)
-            # Also set a normal node attribute for the neurons in this dataset
-            # (this is mainly for convenience when inspecting the graph)
-            neurons = [n for n in G.nodes if G.nodes[n].get("type", None) == "neuron"]
-            nx.set_node_attributes(G, {n: ds.label for n in neurons}, name="dataset")
-
-            # Track how many neurons from this dataset point towards a given label
-            n_in = {}
-            for n in neurons:
-                for nn in G.neighbors(n):
-                    n_in[nn] = n_in.get(nn, 0) + 1
-            nx.set_node_attributes(G, n_in, name=f"{ds.label}_in")
-            graphs.append(G)
+        graphs = [self._dataset_graph(ds) for ds in datasets]
 
         # Combine graphs
         G = nx.compose_all(graphs)
 
         # Run graph processors
-        for proc in self._graph_processors:
-            G = proc(G)
-            if not isinstance(G, nx.Graph):
-                raise ValueError(f"Graph processor must return a graph, got {type(G)}")
+        G = self._apply_processors(G)
 
         # Add manual synonyms
-        for label, synonyms in self._synonyms.items():
-            for syn in synonyms:
-                # Because the graph is directed we have to add the edge both ways
-                if (syn, label) not in G.edges:
-                    G.add_edge(syn, label, weight=0)
-                if (label, syn) not in G.edges:
-                    G.add_edge(label, syn, weight=0)
+        self._apply_synonyms(G)
 
         # Update edge weights -> these should be the number of neurons that point to a label
         weights = nx.get_edge_attributes(graphs[0], "weight")
@@ -793,9 +876,10 @@ class GraphMapper(BaseMapper):
             # Remove "dangling" labels that aren't actually necessary for connecting neurons
             # from different datasets.
             sg_keep_nodes = set()
-            neuron_nodes = [
+            # N.B. this is a set because we're doing a lot of membership tests below
+            neuron_nodes = {
                 n for n in sg.nodes if sg.nodes[n].get("type", None) == "neuron"
-            ]
+            }
             for s, paths in nx.all_pairs_all_shortest_paths(sg):
                 # Skip if the source is not a neuron
                 if s not in neuron_nodes:
@@ -807,11 +891,19 @@ class GraphMapper(BaseMapper):
                     # This avoids keeping labels that just connect two sets of neurons from the same dataset
                     if s_ds == sg.nodes[t].get("dataset", None):
                         continue
-                    # We only allow paths that go from neuron to neuron via labels, not via other neurons
+                    # We only allow paths that go from neuron to neuron via labels, not via other neurons.
+                    # N.B. `paths[t]` contains *all* shortest paths to `t` and we have to drop the
+                    # offending paths individually: if we dropped `t` as soon as any one of its
+                    # shortest paths hops via a neuron we would also throw away the perfectly
+                    # legitimate label-only paths of the same length.
+                    t_paths = paths[t]
                     if not self.allow_indirect:
-                        if any(n in neuron_nodes for p in paths[t] for n in p[1:-1]):
-                            continue
-                    sg_keep_nodes.update([i for p in paths[t] for i in p])
+                        t_paths = [
+                            p
+                            for p in t_paths
+                            if not any(n in neuron_nodes for n in p[1:-1])
+                        ]
+                    sg_keep_nodes.update([i for p in t_paths for i in p])
 
             if len(sg_keep_nodes) != len(sg.nodes):
                 sg = sg.subgraph(sg_keep_nodes)
@@ -895,6 +987,10 @@ class GraphMapper(BaseMapper):
             elif self._label_mode == "first":
                 # Sort such that we prefer shorter, non-compound labels
                 new_label = sorted(ccn_labels, key=lambda x: (len(x.split(",")), x))[0]
+            elif self._label_mode in ("random", "id"):
+                # For mode "id", we will later convert to lowest IDs when we can actually
+                # check for duplicated IDs
+                new_label = uuid.uuid4().hex
             else:
                 raise ValueError(f"Unknown label mode: {self._label_mode}")
 
@@ -929,6 +1025,30 @@ class GraphMapper(BaseMapper):
                 flush=True,
             )
 
+        if self._label_mode == "id":
+            ids, counts = np.unique([_split_prefixed_id(k)[1] for k in mappings], return_counts=True)
+            duplicated_ids = ids[counts > 1]
+            mappings_inv = {}
+            for k, v in mappings.items():
+                if v not in mappings_inv:
+                    mappings_inv[v] = []
+                mappings_inv[v].append(k)
+
+            new_mappings = {}
+            for k, v in mappings_inv.items():
+                unique_ids = [_split_prefixed_id(i)[1] for i in v]
+                unique_ids = [i for i in unique_ids if i not in duplicated_ids]
+
+                if not unique_ids:
+                    # If all IDs are duplicated, fall back to the random UUID
+                    new_label = k
+                else:
+                    # Otherwise use the lowest ID
+                    new_label = str(min(unique_ids))
+                for id in v:
+                    new_mappings[id] = new_label
+            mappings = new_mappings
+
         # Store the results
         self.mappings_ = mappings
         self.graph_ = G_trimmed
@@ -936,7 +1056,7 @@ class GraphMapper(BaseMapper):
         self.graph_full_ = G  # keep the full graph for inspection
 
         # Cache the results
-        self._CACHE[self_identifier] = self
+        self._CACHE[self_identifier] = self._cache_payload()
 
         self.report(
             f"  Found {len(set(self.mappings_.values())):,} unique labels covering {len(self.mappings_):,} neurons.",
@@ -1236,7 +1356,7 @@ def extract_mappings(mappings, dataset):
 
     if all_str:
         return {
-            int(k.split(":")[1]): v
+            _split_prefixed_id(k)[1]: v
             for k, v in mappings.items()
             if k.startswith(dataset)
         }

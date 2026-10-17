@@ -43,7 +43,7 @@ setup(
 
     ],
     install_requires=requirements,
-    extras_require={},
+    extras_require={'knn': ['pynndescent'], 'graph': ['scikit-network']},
     python_requires='>=3.9',
     zip_safe=False,
     include_package_data=True

@@ -1,23 +1,26 @@
 import os
 import clio
+import hashlib
 import requests
 
-import datetime as dt
-import seaserpent as ss
-import neuprint as neu
 import numpy as np
 import pandas as pd
+import datetime as dt
+import neuprint as neu
+import seaserpent as ss
+import caveclient as cc
 
+from pathlib import Path
+from fafbseg import flywire
 from urllib.parse import urlparse
 from functools import lru_cache
-from fafbseg import flywire
-from pathlib import Path
-
 
 CACHE_DIR = "~/.cocoa/cache/"
 FLYWIRE_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file1_neuron_annotations.tsv"
 HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file5_hemibrain_meta.csv"
 ANNOT_REPO_URL = "https://api.github.com/repos/flyconnectome/flywire_annotations"
+BANC_CAVE_TABLE = "codex_annotations"
+BANC_CAVE_DATASTACK = "brain_and_nerve_cord_public"
 
 
 MCNS_BAD_TYPES = (
@@ -77,6 +80,17 @@ FLYWIRE_LIVE_COLUMNS = [
     "synonyms",
 ]
 
+BANC_LIVE_COLUMNS = [
+    "root_id",
+    "supervoxel_id",
+    "superclass",
+    "class",
+    "type",
+    "hemilineage",
+    "side",
+    "region",
+]
+
 HEMIBRAIN_LIVE_COLUMNS = [
     "bodyId",
     "super_class",
@@ -96,7 +110,7 @@ NEUPRINT_URL = "https://neuprint.janelia.org"
 NEUPRINT_MCNS_DATASET = "male-cns:latest"
 
 
-def download_cache_file(url, force_reload="auto", verbose=True):
+def download_cache_file(url, force_reload=False, verbose=True):
     """Load file from URL and cache locally.
 
     Parameters
@@ -117,27 +131,158 @@ def download_cache_file(url, force_reload="auto", verbose=True):
     if not isinstance(url, str):
         raise TypeError(f"Expected `url` of type str, got {type(url)}")
 
-    # Make sure the cache dir exists
-    cache_dir = Path(CACHE_DIR).expanduser().absolute()
-    if not cache_dir.exists():
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-    fp = cache_dir / Path(url).name
+    fp = _url_to_cache_path(url)
 
     if not fp.exists() or force_reload:
         if verbose:
-            print(
-                f"Caching {fp.name} from {urlparse(url).netloc}... ", end="", flush=True
-            )
+            parsed = urlparse(url)
+            print(f"Caching {fp.name} from {parsed.netloc}... ", end="", flush=True)
         r = requests.get(url, allow_redirects=True)
         r.raise_for_status()
         content_type = r.headers.get("content-type", "").lower()
         is_text = "text" in content_type or "html" in content_type
-        with open(fp, mode="w" if is_text else "w") as f:
-            f.write(r.content.decode())
+        mode = "w" if is_text else "wb"
+        with open(fp, mode) as f:
+            if is_text:
+                f.write(r.text)
+            else:
+                f.write(r.content)
         if verbose:
             print("Done.")
     return fp
+
+
+def download_cache_cave_table(
+    table, client, materialization, force_reload=False, chunked=False, verbose=True
+):
+    """Load cave table and cache locally.
+
+    Parameters
+    ----------
+    table :         str
+                    Name of the table in cave to load.
+    client :        caveclient.CAVEclient
+                    Client to use.
+    materialization : int
+                    Which materialization to use when fetching data.
+    force_reload :  bool
+                    If True, will force downloading file again even if it
+                    already exists locally.
+    chunked :       bool
+                    If True, will fetch the table in chunks. Use this for big
+                    tables that fail to load in one go.
+    verbose :       bool
+
+    Returns
+    -------
+    path :          pathlib.Path
+                    Path to the locally stored file.
+
+    """
+    available_tables = client.materialize.get_tables()
+    if table not in available_tables:
+        raise ValueError(
+            f"Table '{table}' not found in cave. Available tables: {available_tables}"
+        )
+
+    available_mats = client.materialize.get_versions()
+    if materialization not in available_mats:
+        raise ValueError(
+            f"Materialization '{materialization}' not found in cave. Available materializations: {available_mats}"
+        )
+
+    # Get last modified timestamp
+    meta = client.materialize.get_table_metadata(table)
+    last_modified_hash = hashlib.sha256(
+        meta["last_modified"].encode("utf-8")
+    ).hexdigest()[:10]
+
+    cache_name = f"{table}_{materialization}_{last_modified_hash}.feather"
+    fp = _cache_dir() / cache_name
+
+    if not fp.exists() or force_reload:
+        if verbose:
+            print(
+                f"Caching {table} (materialization: {materialization}; hash: {last_modified_hash})... ",
+                end="",
+                flush=True,
+            )
+        if not chunked:
+            data = client.materialize.query_table(
+                table, materialization_version=materialization
+            )
+        else:
+            data = query_table_chunked(
+                client, table, materialization, verbose=verbose
+            )
+        data.to_feather(fp)
+        if verbose:
+            print("Done.")
+    return fp
+
+
+def query_table_chunked(client, table, materialization, chunk_size=100_000, verbose=True):
+    """Query a cave table in chunks and return a concatenated DataFrame.
+
+    Parameters
+    ----------
+    client :        caveclient.CAVEclient
+                    Client to use.
+    table :         str
+                    Name of the table in cave to load.
+    materialization : int
+                    Which materialization to use when fetching data.
+    chunk_size :    int
+                    Number of rows to fetch per chunk.
+    verbose :       bool
+
+    Returns
+    -------
+    df :            pd.DataFrame
+                    Concatenated DataFrame with all rows from the table.
+
+    """
+    # Get total number of rows in the table
+    total_rows = client.materialize.get_annotation_count(table)
+    if verbose:
+        print(f"Total rows in {table}: {total_rows}")
+
+    starts = range(0, total_rows, chunk_size)
+    n_chunks = len(starts)
+    dfs = []
+    for i, start in enumerate(starts):
+        end = min(start + chunk_size, total_rows)
+        if verbose:
+            print(f"Fetching chunk {i+1} / {n_chunks} (rows {start} to {end})... ", end="", flush=True)
+        chunk_df = client.materialize.query_table(
+            table,
+            materialization_version=materialization,
+            offset=start,
+            limit=end-start,
+            log_warning=False # prevents the "Limited query to N rows" warning
+        )
+        dfs.append(chunk_df)
+        if verbose:
+            print("Done.")
+
+    return pd.concat(dfs, ignore_index=True)
+
+
+def _url_to_cache_path(url):
+    """Convert URL to cache path."""
+    parsed = urlparse(url)
+    basename = Path(parsed.path).name or parsed.netloc or "download"
+    hash_suffix = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
+    stem, suffix = Path(basename).stem, Path(basename).suffix
+    cache_name = f"{stem}_{hash_suffix}{suffix}"
+    return _cache_dir() / cache_name
+
+
+def _cache_dir():
+    """Return the (existing) cache directory."""
+    cache_dir = Path(CACHE_DIR).expanduser().absolute()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 @lru_cache
@@ -148,7 +293,7 @@ def _load_static_flywire_annotations(mat=None, force_reload=False):
         end="",
         flush=True,
     )
-    fp = Path(CACHE_DIR).expanduser().absolute() / Path(FLYWIRE_ANNOT_URL).name
+    fp = _url_to_cache_path(FLYWIRE_ANNOT_URL)
 
     # If file already exists, check if we need to refresh the cache
     if fp.exists():
@@ -216,12 +361,14 @@ def _load_live_flywire_annotations(mat=None):
         end="",
         flush=True,
     )
-    info = _get_table(which="info")
-    optic = _get_table(which="optic")
+    info = _get_flywire_table(which="info")
+    optic = _get_flywire_table(which="optic")
     cols = FLYWIRE_LIVE_COLUMNS.copy()
     if mat == 783:
         cols.remove("root_id")
-        cols += ["root_783", "release_783"]
+        for c in ["root_783", "release_783"]:
+            if c not in cols:
+                cols += [c]
     table = (
         pd.concat(
             (
@@ -267,7 +414,90 @@ def _load_live_flywire_annotations(mat=None):
 
 
 @lru_cache
-def _get_table(which="info"):
+def _load_live_banc_annotations(mat=None):
+    """Load live BANC annotations from SeaTable."""
+    print(
+        f"Caching live BANC annotations for materialization '{mat}'... ",
+        end="",
+        flush=True,
+    )
+    main = _get_banc_table()
+    cols = BANC_LIVE_COLUMNS.copy()
+
+    if f"root_{mat}" in main.columns:
+        cols.remove("root_id")
+        cols += [f"root_{mat}"]
+    table = main.loc[:, cols].rename({f"root_{mat}": "root_id"}, axis=1)
+
+    # Neurons may not exist at the given materialization
+    table = table[table.root_id.notnull()]
+    table = table.astype({"root_id": np.int64, "supervoxel_id": np.int64})
+
+    # Drop duplicates (make sure to keep those rows with more annotations)
+    srt = np.argsort(table.notnull().sum(axis=1).values)[::-1]
+    table = table.iloc[srt].drop_duplicates(subset=["root_id"]).copy()
+
+    # If we don't have roots for the requested materialization, update them
+    if f"root_{mat}" not in main.columns and mat not in ("live", "current", None):
+        client = _get_cave_client(BANC_CAVE_DATASTACK)
+        timestamp = client.materialize.get_version_metadata(int(mat))["time_stamp"]
+        to_update = ~client.chunkedgraph.is_latest_roots(
+            table.root_id.values, timestamp=timestamp
+        )
+        table.loc[to_update, "root_id"] = client.chunkedgraph.get_roots(
+            table.supervoxel_id.values[to_update], timestamp=timestamp
+        )
+    print("Done.")
+
+    return table
+
+
+@lru_cache
+def _load_cave_banc_annotations(mat=None, with_locations=False):
+    """Load BANC annotations from CAVE."""
+    # This file is in long format: one row per (neuron, classification system)
+    fp = download_cache_cave_table(
+        table=BANC_CAVE_TABLE,
+        client=_get_cave_client(BANC_CAVE_DATASTACK),
+        chunked=True,  # this is a big table that frequently fails to load in one go
+        materialization=mat,
+    )
+    columns = ["pt_root_id", "pt_supervoxel_id", "classification_system", "cell_type"]
+    if with_locations:
+        columns.append("pt_position")
+    data = pd.read_feather(fp, columns=columns)
+
+    # N.B. where there are duplicates, the last row wins
+    neurons = data.drop_duplicates("pt_root_id", keep="last")
+    ann = pd.DataFrame(
+        {
+            "root_id": neurons.pt_root_id.values,
+            "supervoxel_id": neurons.pt_supervoxel_id.values,
+        }
+    )
+    if with_locations:
+        locs = np.vstack(neurons.pt_position.values)
+        ann["loc_x"] = locs[:, 0]
+        ann["loc_y"] = locs[:, 1]
+        ann["loc_z"] = locs[:, 2]
+
+    # Pivot to wide format: one column per classification system
+    cols = ["super_class", "class", "cell_type", "hemilineage", "side", "region"]
+    labels = (
+        data.drop_duplicates(["pt_root_id", "classification_system"], keep="last")
+        .pivot(index="pt_root_id", columns="classification_system", values="cell_type")
+        .reindex(columns=cols)
+    )
+    ann = ann.join(labels, on="root_id")
+
+    # Align with the format of the flytable annotations
+    ann = ann.rename({"cell_type": "type", "super_class": "superclass"}, axis=1)
+
+    return ann
+
+
+@lru_cache
+def _get_flywire_table(which="info"):
     """Initialize connection to annotation table."""
     if which == "info":
         return ss.Table("info", base="main", read_only=True)
@@ -278,6 +508,12 @@ def _get_table(which="info"):
 
 
 @lru_cache
+def _get_banc_table():
+    """Initialize connection to BANC annotation table."""
+    return ss.Table("banc_meta", base="banc_meta", server="https://cloud.seatable.io/", read_only=True)
+
+
+@lru_cache
 def _load_static_hemibrain_annotations(force_reload=False):
     """Download and cache hemibrain annotations from Github repo."""
     print(
@@ -285,7 +521,7 @@ def _load_static_hemibrain_annotations(force_reload=False):
         end="",
         flush=True,
     )
-    fp = Path(CACHE_DIR).expanduser().absolute() / Path(HEMIBRAIN_ANNOT_URL).name
+    fp = _url_to_cache_path(HEMIBRAIN_ANNOT_URL)
 
     # If file already exists, check if we need to refresh the cache
     if fp.exists():
@@ -346,12 +582,21 @@ def _get_mcns_meta(source):
         return _align_columns(clio.fetch_annotations(None, client=client))
     elif source.startswith("neuprint"):
         if "/" in source:
-            dataset = source.split("/")[-1]
+            if source.count("/") != 1:
+                raise ValueError(
+                    f"Invalid neuPrint source '{source}'. Expected format 'server/dataset' or 'server/dataset:version'."
+                )
+            server, dataset = source.split("/")
+            if not server.startswith("http"):
+                server = f"https://{server}"
+            if not server.endswith(".janelia.org"):
+                server += ".janelia.org"
         else:
+            server = NEUPRINT_URL
             dataset = NEUPRINT_MCNS_DATASET
 
-        dataset = _parse_neuprint_dataset(dataset)
-        client = _get_neuprint_mcns_client(dataset=dataset)
+        dataset = _parse_neuprint_dataset(dataset, server=server)
+        client = _get_neuprint_mcns_client(dataset=dataset, server=server)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
             omit_rois=True,
@@ -362,13 +607,13 @@ def _get_mcns_meta(source):
 
 
 @lru_cache
-def _get_manc_meta(source):
+def _get_manc_meta(source, server=None):
     assert source in ("clio", "neuprint")
     if source == "clio":
         client = _get_clio_client(CLIO_MANC_DATASET)
         return _align_columns(clio.fetch_annotations(None, client=client))
     else:
-        client = _get_neuprint_manc_client()
+        client = _get_neuprint_manc_client(server=server)
         return neu.fetch_neurons(
             neu.NeuronCriteria(client=client),
             omit_rois=True,
@@ -377,17 +622,18 @@ def _get_manc_meta(source):
 
 
 @lru_cache
-def _get_neuprint_datasets():
+def _get_neuprint_datasets(server=None):
     """Get available neuPrint datasets."""
     token = os.environ.get("NEUPRINT_APPLICATION_CREDENTIALS")
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(f"{NEUPRINT_URL}/api/dbmeta/datasets", headers=headers)
+    server = server or NEUPRINT_URL
+    r = requests.get(f"{server}/api/dbmeta/datasets", headers=headers)
     r.raise_for_status()
     return list(r.json())
 
 
 @lru_cache
-def _parse_neuprint_dataset(dataset):
+def _parse_neuprint_dataset(dataset, server=None):
     """Find neuPrint dataset and version.
 
     Parameters
@@ -402,7 +648,7 @@ def _parse_neuprint_dataset(dataset):
     else:
         dataset, version = dataset, "latest"
 
-    available = _get_neuprint_datasets()
+    available = _get_neuprint_datasets(server=server)
     versions = [d.split(":")[-1] for d in available if d.startswith(dataset)]
     if not versions:
         raise ValueError(
@@ -410,7 +656,15 @@ def _parse_neuprint_dataset(dataset):
         )
 
     if version == "latest":
-        version = max(versions)
+        try:
+            versions_srt = _semantic_version_sort(versions)
+        except BaseException:
+            print(
+                f"Failed to parse semantic versions for dataset '{dataset}': {versions}.\nFalling back to lexicographic sorting."
+            )
+            versions_srt = sorted(versions)
+        version = versions_srt[-1]
+        print(f"Using latest version of dataset '{dataset}': {version}")
     elif version not in versions:
         raise ValueError(
             f"Dataset {dataset} does not have version '{version}'. Available versions: {versions}"
@@ -419,27 +673,41 @@ def _parse_neuprint_dataset(dataset):
     return f"{dataset}:{version}"
 
 
+def _semantic_version_sort(versions):
+    """Sort versions in the format v0.9, v0.13, v1.0."""
+
+    def version_key(v):
+        return [int(x) for x in v.lstrip("v").split(".")]
+
+    return sorted(versions, key=version_key)
+
+
 @lru_cache
-def _get_neuprint_hemibrain_client(version="1.2.1"):
+def _get_neuprint_hemibrain_client(version="1.2.1", server=None):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client(NEUPRINT_URL, dataset=f"hemibrain:v{version}")
+    return neu.Client(dataset=f"hemibrain:v{version}", server=server or NEUPRINT_URL)
 
 
 @lru_cache
-def _get_neuprint_mcns_client(dataset):
-    dataset = _parse_neuprint_dataset(dataset)
-    return neu.Client(NEUPRINT_URL, dataset=dataset)
+def _get_neuprint_mcns_client(dataset, server=None):
+    dataset = _parse_neuprint_dataset(dataset, server=server)
+    return neu.Client(dataset=dataset, server=server or NEUPRINT_URL)
 
 
 @lru_cache
-def _get_neuprint_manc_client(version="1.2.1"):
+def _get_neuprint_manc_client(version="1.2.1", server=None):
     version = version[1:] if version.startswith("v") else version
-    return neu.Client(NEUPRINT_URL, dataset=f"manc:v{version}")
+    return neu.Client(dataset=f"manc:v{version}", server=server or NEUPRINT_URL)
 
 
 @lru_cache
 def _get_clio_client(dataset):
     return clio.Client(dataset=dataset)
+
+
+@lru_cache
+def _get_cave_client(dataset):
+    return cc.CAVEclient(datastack_name=dataset)
 
 
 @lru_cache
@@ -799,42 +1067,51 @@ def _add_types(
         edges = edges.copy()
 
     # Add type
-    edges["_type"] = edges[col].map(types)
-    has_type = edges._type.notnull()
+    edges["__type__"] = edges[col].map(types)
+    has_type = edges["__type__"].notnull()
 
     # Add side
     if sides:
-        edges["_side"] = edges[col].map(sides)
+        edges["__side__"] = edges[col].map(sides)
 
-        has_side = edges._side.notnull()
-        not_center = edges._side != "center"
+        has_side = edges["__side__"].notnull()
+        not_center = ~edges["__side__"].isin(["center", "C", "M"])
 
         # Make sides relative to the neuron on the other side of the edge
         if sides_rel:
-            edges["_side_other"] = edges[other].map(sides)
-            has_side_both = edges._side.notnull() & edges._side_other.notnull()
-            not_center_both = (edges._side_other != "center") & (edges._side != "center")
-            same_side = edges._side == edges._side_other
+            edges["__side_other__"] = edges[other].map(sides)
+            has_side_both = (
+                edges["__side__"].notnull() & edges["__side_other__"].notnull()
+            )
+            not_center_both = (edges["__side_other__"] != "center") & (
+                edges["__side__"] != "center"
+            )
+            same_side = edges["__side__"] == edges["__side_other__"]
             edges.loc[
-                has_type & has_side_both & not_center_both & same_side, "_side"
+                has_type & has_side_both & not_center_both & same_side, "__side__"
             ] = "ipsi"
             edges.loc[
-                has_type & has_side_both & not_center_both & ~same_side, "_side"
+                has_type & has_side_both & not_center_both & ~same_side, "__side__"
             ] = "contra"
 
         # Add side to the type
         to_mod = has_side & has_type & not_center
-        edges.loc[to_mod, "_type"] = edges.loc[to_mod, ["_type", "_side"]].apply(
-            lambda x: f"{x[0]}_{x[1]}", axis=1
-        )
+        edges.loc[to_mod, "__type__"] = edges.loc[
+            to_mod, ["__type__", "__side__"]
+        ].apply(lambda x: f"{x.__type__}_{x.__side__}", axis=1)
 
     # Replace `col` with type
     edges[col] = edges[col].astype(object)
-    edges.loc[has_type, col] = edges.loc[has_type, "_type"]
-    edges.drop(["_type", "_side", "_side_other"], errors="ignore", inplace=True, axis=1)
+    edges.loc[has_type, col] = edges.loc[has_type, "__type__"]
+    edges.drop(
+        ["__type__", "__side__", "__side_other__"],
+        errors="ignore",
+        inplace=True,
+        axis=1,
+    )
 
     if drop_untyped:
-        edges = edges.loc[has_type]
+        edges = edges.loc[has_type].copy()
 
     return edges
 
@@ -861,12 +1138,13 @@ def _morphology_to_connectivity_types(x, live=False):
     )
     new_labels = []
     for label in x:
-        if isinstance(x, str):
+        if isinstance(label, str):
             new_labels.append(",".join([morph2cn.get(l, l) for l in label.split(",")]))
         else:
             new_labels.append(morph2cn.get(label, label))
 
-    return np.array(new_labels)
+    # N.B. use object dtype so that numpy doesn't turn NaNs into "nan" strings
+    return np.array(new_labels, dtype=object)
 
 
 def _parse_neuprint_roi(roi, client):

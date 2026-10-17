@@ -2,6 +2,7 @@
 # - add parameter to use the "untyped" fraction in the clustering?
 
 import re
+import json
 import functools
 
 import pandas as pd
@@ -10,6 +11,7 @@ import seaborn as sns
 import matplotlib.colors as mcl
 import matplotlib.pyplot as plt
 
+from pathlib import Path
 from tqdm.auto import tqdm
 
 # Fastcluster seems to be ~2X faster than scipy
@@ -26,13 +28,19 @@ from matplotlib.collections import PatchCollection
 from .datasets import FlyWire, Hemibrain, MaleCNS, MaleVNC
 from .datasets.core import DataSet
 from .datasets.ds_utils import _add_types
-from .cluster_utils import extract_homogeneous_clusters, is_good
+from .cluster_utils import (  # noqa: F401
+    extract_homogeneous_clusters,
+    extract_homogeneous_clusters_knn,
+    is_good,
+)
+from .composition import EqualBalance
 from .utils import make_iterable, printv
 from .distance import calculate_distance
 from .mappers import GraphMapper, BaseMapper, extract_mappings
+from .bigclust import BigClustProject
 
 
-__all__ = ["Clustering", "generate_clustering"]
+__all__ = ["Clustering", "generate_clustering", "BigClustProject"]
 
 
 CLUSTER_DEFAULTS = dict(method="ward")
@@ -85,10 +93,35 @@ class Clustering:
         """Return copy of clustering."""
         cl = Clustering()
         cl._datasets = list(self.datasets)
-        for prop in ("dists_", "cn_frac_", "vect", "vect_sources_", "vect_labels_"):
+        for prop in ("dists_", "cn_frac_", "vect_", "vect_sources_", "vect_labels_"):
             if hasattr(self, prop):
-                setattr(cl, prop, getattr(self, prop).copy())
+                value = getattr(self, prop)
+                # N.B. `dists_` is None when compiled with `skip_distance=True`
+                setattr(cl, prop, value.copy() if value is not None else None)
         return cl
+
+    def _obs_ids(self):
+        """Neuron ID for each observation, in the order of `vect_`."""
+        return self.vect_.index.values
+
+    def _obs_labels(self):
+        """`{label}_{dataset}` for each observation, in the order of `vect_`."""
+        return np.array(
+            [f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)]
+        )
+
+    def _format_clusters(self, cl, out):
+        """Turn a cluster membership array into the requested `out` format."""
+        if out == "membership":
+            return cl
+        elif out == "ids":
+            ids = self._obs_ids()
+            return [ids[cl == i] for i in np.unique(cl)]
+        elif out == "labels":
+            lbls = self._obs_labels()
+            return [lbls[cl == i] for i in np.unique(cl)]
+        else:
+            raise ValueError(f'Unknown output format "{out}"')
 
     def add_dataset(self, ds):
         """Add dataset(s)."""
@@ -278,7 +311,7 @@ class Clustering:
             ):
                 printv(
                     f'Compiling connectivity vector for "{ds.label}" '
-                    f"({ds.type}) [{i + 1}/{len(self.datasets)}]",
+                    f"({ds.type}: {len(ds.neurons)} neurons) [{i + 1}/{len(self.datasets)}]",
                     verbose=verbose,
                 )
                 _ot = ds.use_types
@@ -416,19 +449,32 @@ class Clustering:
         sources = []
         labels = []
         for ds in self.datasets:
-            # Group the edge list
-            adj = ds.edges_proc_.groupby(["pre", "post"]).weight.sum().unstack()
-            # Get downstream adjacency (rows = queries, columns = shared targets)
-            down = adj.reindex(index=ds.neurons, columns=to_use)
+            edges = ds.edges_proc_
+            # Compute only the two blocks we need rather than a full matrix.
+            down = (
+                edges.loc[edges.pre.isin(ds.neurons) & edges.post.isin(to_use)]
+                .groupby(["pre", "post"])
+                .weight.sum()
+                .unstack(fill_value=0)
+                .reindex(index=ds.neurons, columns=to_use, fill_value=0)
+            )
             down.columns = pd.MultiIndex.from_tuples(
                 [("downstream", c) for c in down.columns]
             )
-            # Get upstream adjacency (rows = shared inputs, columns = queries)
-            up = adj.reindex(columns=ds.neurons, index=to_use).T
+
+            up = (
+                edges.loc[edges.pre.isin(to_use) & edges.post.isin(ds.neurons)]
+                .groupby(["pre", "post"])
+                .weight.sum()
+                .unstack(fill_value=0)
+                .reindex(index=to_use, columns=ds.neurons, fill_value=0)
+                .T
+            )
             up.columns = pd.MultiIndex.from_tuples(
                 [("upstream", c) for c in up.columns]
             )
-            adjacencies.append(pd.concat((down, up), axis=1).fillna(0))
+
+            adjacencies.append(pd.concat((down, up), axis=1))
             sources += [ds.label] * adjacencies[-1].shape[0]
             labels += ds.get_labels(ds.neurons).tolist()
         self.vect_ = pd.concat(adjacencies, axis=0).astype(VECT_DTYPE)
@@ -488,13 +534,13 @@ class Clustering:
                 augment=augment,
                 metric=metric,
                 verbose=verbose,
-                n_batches=(self.vect_.shape[0] // 100000 + 1)
-                if n_batches == "auto"  # Start batching after 100k neurons
-                else n_batches,
+                n_batches=(
+                    (self.vect_.shape[0] // 100000 + 1)
+                    if n_batches == "auto"  # Start batching after 100k neurons
+                    else n_batches
+                ),
             )
-            self.dists_.columns = [
-                f"{l}_{ds}" for l, ds in zip(self.vect_labels_, self.vect_sources_)
-            ]
+            self.dists_.columns = self._obs_labels()
 
         printv("All done.", verbose=verbose)
         return self
@@ -510,8 +556,9 @@ class Clustering:
         clusters :    iterable, optional
                       Clusters as provided by `extract_clusters`. Must be
                       membership, i.e. `[0, 0, 0, 1, 2, 1, 0, ...]`.
-        link_method : str
-                      Linkage method for sorting neurons.
+        link_method : str, optional
+                      Linkage method for sorting neurons. Ignored if clustering
+                      has no `dists_` attribute.
         orient :      "neurons" | "clusters
                       Determines output:
                         - for "neurons" each row will be a neuron
@@ -534,20 +581,23 @@ class Clustering:
             raise ValueError('Must provide `clusters` when `orient="clusters"`')
 
         # Turn similarity into distances
-        x = self.dists_
-        if x.values[0, 0] >= 0.999:
-            x = 1 - x
+        if self.dists_ is not None and link_method is not None:
+            x = self.dists_
+            if x.values[0, 0] >= 0.999:
+                x = 1 - x
 
-        # Generate linkage and extract order
-        if not isinstance(linkage, np.ndarray):
-            Z = self.get_linkage(method=link_method)
+            # Generate linkage and extract order
+            if not isinstance(linkage, np.ndarray):
+                Z = self.get_linkage(method=link_method)
+            else:
+                Z = linkage
+            leafs = leaves_list(Z)
         else:
-            Z = linkage
-        leafs = leaves_list(Z)
+            leafs = np.arange(self.vect_.shape[0])
 
         # Generate table
         table = pd.DataFrame()
-        table["id"] = self.dists_.index.values[leafs]
+        table["id"] = self._obs_ids()[leafs]
         table["dataset"] = self.vect_sources_[leafs]
 
         # Add labels
@@ -593,6 +643,39 @@ class Clustering:
         return table
 
     @req_compile
+    def to_bigclust_project(
+        self,
+        path,
+        project_name=None,
+        description=None,
+        include_features=True,
+        include_distances=True,
+        umap_metrics=("precomputed", "cosine"),
+        umap_kwargs=None,
+        hover_cols=None,
+        neuropil_source=None,
+    ):
+        """Convert a clustering to a BigClust 2.0 project.
+
+        Returns
+        -------
+        BigClustProject
+            The exported BigClust project helper.
+        """
+        return BigClustProject.from_clustering(
+            self,
+            path,
+            project_name=project_name,
+            description=description,
+            include_features=include_features,
+            include_distances=include_distances,
+            umap_metrics=umap_metrics,
+            umap_kwargs=umap_kwargs,
+            hover_cols=hover_cols,
+            neuropil_source=neuropil_source,
+        )
+
+    @req_compile
     def extract_clusters(self, N, out="membership", linkage=None, **kwargs):
         """Extract clusters.
 
@@ -630,26 +713,20 @@ class Clustering:
             Z = linkage
 
         cl = cut_tree(Z, n_clusters=N).flatten()
-        if out == "membership":
-            return cl
-        elif out == "ids":
-            return [self.dists_.index.values[cl == i] for i in np.unique(cl)]
-        elif out == "labels":
-            return [self.dists_.columns.values[cl == i] for i in np.unique(cl)]
-        else:
-            raise ValueError(f'Unknown output format "{out}"')
+        return self._format_clusters(cl, out)
 
-    @req_compile
     def extract_homogeneous_clusters(
         self,
         out="membership",
-        eval_func=is_good,
+        method="dendrogram",
+        eval_func=EqualBalance(),
         max_dist=None,
         min_dist=None,
         min_dist_diff=None,
         link_method="ward",
         linkage=None,
         verbose=False,
+        **kwargs,
     ):
         """Extract homogenous clusters from clustermap or distance matrix.
 
@@ -660,49 +737,103 @@ class Clustering:
                          - `ids` returns lists of neuron IDs
                          - `membership` returns a cluster ID for each neuron
                          - `labels` returns lists of neuron labels
-        eval_func :     callable
-                        Must accept two positional arguments:
-                         1. A numpy array of label counts (e.g. `[1, 1, 2]`)
-                         2. An integer describing how many unique labels we expect
-                        Must return True if cluster composition is acceptable and
-                        False if it isn't.
+        method :        'dendrogram' | 'knn'
+                        How to build the tree that is walked:
+                         - `dendrogram` (default) uses the full distance matrix
+                           (`dists_`) and a classic linkage
+                         - `knn` builds a KNN graph from the observation vectors
+                           (`vect_`) and runs a neighbourhood-constrained Ward
+                           agglomeration instead. Nothing `O(N^2)` is allocated,
+                           which makes it the option for large datasets - pair it
+                           with `compile(skip_distance=True)`. Note that
+                           `min_dist`, `max_dist` and `min_dist_diff` are on a
+                           different scale here; see
+                           `cocoa.extract_homogeneous_clusters_knn`.
+        eval_func :     CompositionCriterion | callable
+                        Decides whether a candidate cluster has an acceptable mix
+                        of datasets. The default, `EqualBalance`, compares the
+                        datasets against each other and so expects them to
+                        contribute equally. If your datasets differ in size - e.g.
+                        one covers both hemispheres and another only one - use
+                        `ProportionalBalance` instead, which compares each dataset
+                        against its share of the pool:
+
+                          >>> from cocoa.composition import ProportionalBalance
+                          >>> cl.extract_homogeneous_clusters(
+                          ...     eval_func=ProportionalBalance()
+                          ... )
+
         min/max_dist :  float
                         Use this to set a range of between-cluster distances at
                         which we are allowed to make clusters.
         link_method :   str
-                        Method to use for generating the linkage.
+                        Method to use for generating the linkage. Only for
+                        `method="dendrogram"`.
         linkage :       np.ndarray, optional
                         Precomputed linkage matrix. If provided, will use this
-                        instead of calculating a new one.
+                        instead of calculating a new one. Only for
+                        `method="dendrogram"`.
+        **kwargs
+                        Only for `method="knn"`: `n_neighbors`, `metric`,
+                        `n_components`, `knn`, `random_state` and `monotonic`
+                        are passed through to
+                        `cocoa.extract_homogeneous_clusters_knn`.
 
         Returns
         -------
         See `out` parameter.
 
         """
+        if method not in ("dendrogram", "knn"):
+            raise ValueError(f'`method` must be "dendrogram" or "knn", got "{method}"')
+
+        if method == "knn":
+            # The KNN path only needs the observation vectors, so don't let a
+            # cold start compute the distance matrix it exists to avoid
+            if getattr(self, "vect_", None) is None:
+                self.compile(skip_distance=True)
+        elif not hasattr(self, "dists_"):
+            self.compile()
 
         if len(np.unique(self.vect_sources_)) != len(self):
             print("Warning: it appears that dataset labels are not unique")
 
-        cl = extract_homogeneous_clusters(
-            self.dists_,
-            labels=self.vect_sources_,
-            eval_func=eval_func,
-            link_method=link_method,
-            max_dist=max_dist,
-            min_dist=min_dist,
-            min_dist_diff=min_dist_diff,
-            linkage=linkage,
-            verbose=verbose,
-        )
-        if out == "membership":
-            return cl
-        elif out == "ids":
-            return [self.dists_.index.values[cl == i] for i in np.unique(cl)]
-        elif out == "labels":
-            return [self.dists_.columns.values[cl == i] for i in np.unique(cl)]
+        if method == "knn":
+            cl = extract_homogeneous_clusters_knn(
+                self.vect_,
+                labels=self.vect_sources_,
+                eval_func=eval_func,
+                max_dist=max_dist,
+                min_dist=min_dist,
+                min_dist_diff=min_dist_diff,
+                verbose=verbose,
+                **kwargs,
+            )
         else:
-            raise ValueError(f'Unknown output format "{out}"')
+            if kwargs:
+                raise TypeError(
+                    f"Unexpected keyword argument(s) {sorted(kwargs)} - these are "
+                    'only accepted with `method="knn"`.'
+                )
+            if linkage is None and self.dists_ is None:
+                raise ValueError(
+                    "This clustering has no distance matrix - it was compiled "
+                    "with `skip_distance=True`. Either recompile with distances "
+                    'or use `method="knn"`, which works off the observation '
+                    "vectors and does not need one."
+                )
+            cl = extract_homogeneous_clusters(
+                self.dists_ if linkage is None else linkage,
+                labels=self.vect_sources_,
+                eval_func=eval_func,
+                link_method=link_method,
+                max_dist=max_dist,
+                min_dist=min_dist,
+                min_dist_diff=min_dist_diff,
+                verbose=verbose,
+            )
+
+        return self._format_clusters(cl, out)
 
     @req_compile
     def plot_dendrogram(
