@@ -1,24 +1,26 @@
-import hashlib
 import os
 import clio
+import hashlib
 import requests
 
-import datetime as dt
-import seaserpent as ss
-import neuprint as neu
 import numpy as np
 import pandas as pd
+import datetime as dt
+import neuprint as neu
+import seaserpent as ss
+import caveclient as cc
 
+from pathlib import Path
+from fafbseg import flywire
 from urllib.parse import urlparse
 from functools import lru_cache
-from fafbseg import flywire
-from pathlib import Path
-
 
 CACHE_DIR = "~/.cocoa/cache/"
 FLYWIRE_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file1_neuron_annotations.tsv"
 HEMIBRAIN_ANNOT_URL = "https://github.com/flyconnectome/flywire_annotations/raw/main/supplemental_files/Supplemental_file5_hemibrain_meta.csv"
 ANNOT_REPO_URL = "https://api.github.com/repos/flyconnectome/flywire_annotations"
+BANC_CAVE_TABLE = "codex_annotations"
+BANC_CAVE_DATASTACK = "brain_and_nerve_cord_public"
 
 
 MCNS_BAD_TYPES = (
@@ -129,19 +131,12 @@ def download_cache_file(url, force_reload=False, verbose=True):
     if not isinstance(url, str):
         raise TypeError(f"Expected `url` of type str, got {type(url)}")
 
-    # Make sure the cache dir exists
-    cache_dir = Path(CACHE_DIR).expanduser().absolute()
-    if not cache_dir.exists():
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
     fp = _url_to_cache_path(url)
 
     if not fp.exists() or force_reload:
         if verbose:
             parsed = urlparse(url)
-            print(
-                f"Caching {fp.name} from {parsed.netloc}... ", end="", flush=True
-            )
+            print(f"Caching {fp.name} from {parsed.netloc}... ", end="", flush=True)
         r = requests.get(url, allow_redirects=True)
         r.raise_for_status()
         content_type = r.headers.get("content-type", "").lower()
@@ -157,6 +152,122 @@ def download_cache_file(url, force_reload=False, verbose=True):
     return fp
 
 
+def download_cache_cave_table(
+    table, client, materialization, force_reload=False, chunked=False, verbose=True
+):
+    """Load cave table and cache locally.
+
+    Parameters
+    ----------
+    table :         str
+                    Name of the table in cave to load.
+    client :        caveclient.CAVEclient
+                    Client to use.
+    materialization : int
+                    Which materialization to use when fetching data.
+    force_reload :  bool
+                    If True, will force downloading file again even if it
+                    already exists locally.
+    chunked :       bool
+                    If True, will fetch the table in chunks. Use this for big
+                    tables that fail to load in one go.
+    verbose :       bool
+
+    Returns
+    -------
+    path :          pathlib.Path
+                    Path to the locally stored file.
+
+    """
+    available_tables = client.materialize.get_tables()
+    if table not in available_tables:
+        raise ValueError(
+            f"Table '{table}' not found in cave. Available tables: {available_tables}"
+        )
+
+    available_mats = client.materialize.get_versions()
+    if materialization not in available_mats:
+        raise ValueError(
+            f"Materialization '{materialization}' not found in cave. Available materializations: {available_mats}"
+        )
+
+    # Get last modified timestamp
+    meta = client.materialize.get_table_metadata(table)
+    last_modified_hash = hashlib.sha256(
+        meta["last_modified"].encode("utf-8")
+    ).hexdigest()[:10]
+
+    cache_name = f"{table}_{materialization}_{last_modified_hash}.feather"
+    fp = _cache_dir() / cache_name
+
+    if not fp.exists() or force_reload:
+        if verbose:
+            print(
+                f"Caching {table} (materialization: {materialization}; hash: {last_modified_hash})... ",
+                end="",
+                flush=True,
+            )
+        if not chunked:
+            data = client.materialize.query_table(
+                table, materialization_version=materialization
+            )
+        else:
+            data = query_table_chunked(
+                client, table, materialization, verbose=verbose
+            )
+        data.to_feather(fp)
+        if verbose:
+            print("Done.")
+    return fp
+
+
+def query_table_chunked(client, table, materialization, chunk_size=100_000, verbose=True):
+    """Query a cave table in chunks and return a concatenated DataFrame.
+
+    Parameters
+    ----------
+    client :        caveclient.CAVEclient
+                    Client to use.
+    table :         str
+                    Name of the table in cave to load.
+    materialization : int
+                    Which materialization to use when fetching data.
+    chunk_size :    int
+                    Number of rows to fetch per chunk.
+    verbose :       bool
+
+    Returns
+    -------
+    df :            pd.DataFrame
+                    Concatenated DataFrame with all rows from the table.
+
+    """
+    # Get total number of rows in the table
+    total_rows = client.materialize.get_annotation_count(table)
+    if verbose:
+        print(f"Total rows in {table}: {total_rows}")
+
+    starts = range(0, total_rows, chunk_size)
+    n_chunks = len(starts)
+    dfs = []
+    for i, start in enumerate(starts):
+        end = min(start + chunk_size, total_rows)
+        if verbose:
+            print(f"Fetching chunk {i+1} / {n_chunks} (rows {start} to {end})... ", end="", flush=True)
+        chunk_df = client.materialize.query_table(
+            table,
+            materialization_version=materialization,
+            offset=start,
+            limit=end-start,
+            log_warning=False # prevents the "Limited query to N rows" warning
+        )
+        dfs.append(chunk_df)
+        if verbose:
+            print("Done.")
+
+    return pd.concat(dfs, ignore_index=True)
+
+
 def _url_to_cache_path(url):
     """Convert URL to cache path."""
     parsed = urlparse(url)
@@ -164,7 +275,14 @@ def _url_to_cache_path(url):
     hash_suffix = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
     stem, suffix = Path(basename).stem, Path(basename).suffix
     cache_name = f"{stem}_{hash_suffix}{suffix}"
-    return Path(CACHE_DIR).expanduser().absolute() / cache_name
+    return _cache_dir() / cache_name
+
+
+def _cache_dir():
+    """Return the (existing) cache directory."""
+    cache_dir = Path(CACHE_DIR).expanduser().absolute()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 @lru_cache
@@ -308,30 +426,74 @@ def _load_live_banc_annotations(mat=None):
 
     if f"root_{mat}" in main.columns:
         cols.remove("root_id")
-        cols += ["root_{mat}"]
-    table = (
-        main.loc[:, cols]
-        .rename({f"root_{mat}": "root_id"}, axis=1)
-        .astype({"root_id": np.int64, "supervoxel_id": np.int64})
-    )
+        cols += [f"root_{mat}"]
+    table = main.loc[:, cols].rename({f"root_{mat}": "root_id"}, axis=1)
+
+    # Neurons may not exist at the given materialization
+    table = table[table.root_id.notnull()]
+    table = table.astype({"root_id": np.int64, "supervoxel_id": np.int64})
 
     # Drop duplicates (make sure to keep those rows with more annotations)
-    srt = np.argsort(table.notnull().sum(axis=1))[::-1]
-    table = table.loc[srt].drop_duplicates(subset=["root_id"]).copy()
+    srt = np.argsort(table.notnull().sum(axis=1).values)[::-1]
+    table = table.iloc[srt].drop_duplicates(subset=["root_id"]).copy()
 
-    if f"root_{mat}" in main.columns:
-        table = table[table.root_id.notnull()].copy()
-    elif mat not in ("live", "current", None):
-        timestamp = f"mat_{mat}"
-        to_update = ~flywire.is_latest_root(
-            table.root_id, timestamp=timestamp, progress=False
+    # If we don't have roots for the requested materialization, update them
+    if f"root_{mat}" not in main.columns and mat not in ("live", "current", None):
+        client = _get_cave_client(BANC_CAVE_DATASTACK)
+        timestamp = client.materialize.get_version_metadata(int(mat))["time_stamp"]
+        to_update = ~client.chunkedgraph.is_latest_roots(
+            table.root_id.values, timestamp=timestamp
         )
-        table.loc[to_update, "root_id"] = flywire.supervoxels_to_roots(
-            table.supervoxel_id.values[to_update], timestamp=timestamp, progress=False
+        table.loc[to_update, "root_id"] = client.chunkedgraph.get_roots(
+            table.supervoxel_id.values[to_update], timestamp=timestamp
         )
     print("Done.")
 
     return table
+
+
+@lru_cache
+def _load_cave_banc_annotations(mat=None, with_locations=False):
+    """Load BANC annotations from CAVE."""
+    # This file is in long format: one row per (neuron, classification system)
+    fp = download_cache_cave_table(
+        table=BANC_CAVE_TABLE,
+        client=_get_cave_client(BANC_CAVE_DATASTACK),
+        chunked=True,  # this is a big table that frequently fails to load in one go
+        materialization=mat,
+    )
+    columns = ["pt_root_id", "pt_supervoxel_id", "classification_system", "cell_type"]
+    if with_locations:
+        columns.append("pt_position")
+    data = pd.read_feather(fp, columns=columns)
+
+    # N.B. where there are duplicates, the last row wins
+    neurons = data.drop_duplicates("pt_root_id", keep="last")
+    ann = pd.DataFrame(
+        {
+            "root_id": neurons.pt_root_id.values,
+            "supervoxel_id": neurons.pt_supervoxel_id.values,
+        }
+    )
+    if with_locations:
+        locs = np.vstack(neurons.pt_position.values)
+        ann["loc_x"] = locs[:, 0]
+        ann["loc_y"] = locs[:, 1]
+        ann["loc_z"] = locs[:, 2]
+
+    # Pivot to wide format: one column per classification system
+    cols = ["super_class", "class", "cell_type", "hemilineage", "side", "region"]
+    labels = (
+        data.drop_duplicates(["pt_root_id", "classification_system"], keep="last")
+        .pivot(index="pt_root_id", columns="classification_system", values="cell_type")
+        .reindex(columns=cols)
+    )
+    ann = ann.join(labels, on="root_id")
+
+    # Align with the format of the flytable annotations
+    ann = ann.rename({"cell_type": "type", "super_class": "superclass"}, axis=1)
+
+    return ann
 
 
 @lru_cache
@@ -347,8 +509,8 @@ def _get_flywire_table(which="info"):
 
 @lru_cache
 def _get_banc_table():
-    """Initialize connection to annotation table."""
-    return ss.Table("banc_main", base="banc", read_only=True)
+    """Initialize connection to BANC annotation table."""
+    return ss.Table("banc_meta", base="banc_meta", server="https://cloud.seatable.io/", read_only=True)
 
 
 @lru_cache
@@ -443,6 +605,7 @@ def _get_mcns_meta(source):
     else:
         raise ValueError(f"Unknown male CNS source: {source}. ")
 
+
 @lru_cache
 def _get_manc_meta(source, server=None):
     assert source in ("clio", "neuprint")
@@ -496,7 +659,9 @@ def _parse_neuprint_dataset(dataset, server=None):
         try:
             versions_srt = _semantic_version_sort(versions)
         except BaseException:
-            print(f"Failed to parse semantic versions for dataset '{dataset}': {versions}.\nFalling back to lexicographic sorting.")
+            print(
+                f"Failed to parse semantic versions for dataset '{dataset}': {versions}.\nFalling back to lexicographic sorting."
+            )
             versions_srt = sorted(versions)
         version = versions_srt[-1]
         print(f"Using latest version of dataset '{dataset}': {version}")
@@ -510,8 +675,10 @@ def _parse_neuprint_dataset(dataset, server=None):
 
 def _semantic_version_sort(versions):
     """Sort versions in the format v0.9, v0.13, v1.0."""
+
     def version_key(v):
         return [int(x) for x in v.lstrip("v").split(".")]
+
     return sorted(versions, key=version_key)
 
 
@@ -536,6 +703,11 @@ def _get_neuprint_manc_client(version="1.2.1", server=None):
 @lru_cache
 def _get_clio_client(dataset):
     return clio.Client(dataset=dataset)
+
+
+@lru_cache
+def _get_cave_client(dataset):
+    return cc.CAVEclient(datastack_name=dataset)
 
 
 @lru_cache
@@ -966,12 +1138,13 @@ def _morphology_to_connectivity_types(x, live=False):
     )
     new_labels = []
     for label in x:
-        if isinstance(x, str):
+        if isinstance(label, str):
             new_labels.append(",".join([morph2cn.get(l, l) for l in label.split(",")]))
         else:
             new_labels.append(morph2cn.get(label, label))
 
-    return np.array(new_labels)
+    # N.B. use object dtype so that numpy doesn't turn NaNs into "nan" strings
+    return np.array(new_labels, dtype=object)
 
 
 def _parse_neuprint_roi(roi, client):

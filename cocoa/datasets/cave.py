@@ -1,16 +1,29 @@
+import re
 import numpy as np
 import pandas as pd
 import networkx as nx
 import datetime as dt
-import caveclient as cc
-import seaserpent as ss
 
 from abc import ABC
+from pathlib import Path
 from fafbseg import flywire
 
 from .core import DataSet
-from .ds_utils import _is_int, _find_column, _add_types
+from .ds_utils import (
+    _is_int,
+    _find_column,
+    _add_types,
+    _get_cave_client,
+    _morphology_to_connectivity_types,
+)
 from ..utils import collapse_neuron_nodes
+
+# Accepted column names for local connectivity (`cn_object`)
+CN_COLUMN_ALIASES = {
+    "pre": ("pre_pt_root_id", "pre_root_id", "pre"),
+    "post": ("post_pt_root_id", "post_root_id", "post"),
+    "weight": ("syn_count", "weight", "count"),
+}
 
 
 class CaveDataset(DataSet, ABC):
@@ -18,9 +31,38 @@ class CaveDataset(DataSet, ABC):
 
     required_attributes = ["_datastack_name", "_type_cols", "_side_cols"]
 
-    def __init__(self, label):
+    # N.B. the `cn_object` setter renames e.g. "neuropil" to "roi"
+    _roi_col = "roi"
+
+    # Attributes copied over by `.copy()` (in addition to neurons & connectivity)
+    _copy_attrs = (
+        "upstream",
+        "downstream",
+        "use_types",
+        "use_sides",
+        "exclude_queries",
+    )
+
+    def __init__(
+        self,
+        label,
+        upstream=True,
+        downstream=True,
+        use_types=False,
+        use_sides=False,
+        exclude_queries=False,
+        cn_object=None,
+        materialization="latest",
+    ):
+        assert use_sides in (True, False, "relative")
         super().__init__(label)
-        self._materialization = None
+        self.upstream = upstream
+        self.downstream = downstream
+        self.use_types = use_types
+        self.use_sides = use_sides
+        self.exclude_queries = exclude_queries
+        self.cn_object = cn_object
+        self.materialization = materialization
 
     @classmethod
     def __init_subclass__(cls, **kwargs):
@@ -32,9 +74,7 @@ class CaveDataset(DataSet, ABC):
 
     @property
     def caveclient(self):
-        if not hasattr(self, "_caveclient"):
-            self._caveclient = cc.CAVEclient(self._datastack_name)
-        return self._caveclient
+        return _get_cave_client(self._datastack_name)
 
     @property
     def materialization(self):
@@ -42,9 +82,95 @@ class CaveDataset(DataSet, ABC):
 
     @materialization.setter
     def materialization(self, value):
+        if value not in ("auto", "latest", "live") and not _is_int(value):
+            raise ValueError(
+                '`materialization` must be "auto", "latest", "live" or an integer, '
+                f'got "{value}"'
+            )
+        self._check_materialization(value)
         if value == "latest":
-            value = max(self.caveclient.materialization.get_versions())
+            value = max(self.caveclient.materialize.get_versions())
+        elif value not in ("auto", "live"):
+            value = int(value)
         self._materialization = value
+
+    def _check_materialization(self, value):
+        """Raise if `value` isn't supported by this dataset. Override as needed."""
+        pass
+
+    def _resolve_materialization(self, ids):
+        """Resolve "auto" materialization and check that `ids` exist at it.
+
+        This is the only place where "auto" gets resolved: we pick a
+        materialization at which all `ids` co-exist and store it on the
+        dataset so that subsequent queries use the same version.
+
+        Returns
+        -------
+        int | "live"
+
+        """
+        ids = np.unique(np.asarray(ids).astype(np.int64))
+        client = self.caveclient
+
+        if self.materialization == "auto":
+            self.materialization = flywire.utils.find_mat_version(
+                ids, dataset=client.datastack_name
+            )
+            return self.materialization
+
+        if self.materialization == "live":
+            timestamp = None
+        else:
+            timestamp = client.materialize.get_version_metadata(
+                self.materialization
+            )["time_stamp"]
+        il = client.chunkedgraph.is_latest_roots(ids, timestamp=timestamp)
+        if any(~il):
+            raise ValueError(
+                "Some of the root IDs do not exist for the specified "
+                f"materialization ({self.materialization}): {ids[~il]}"
+            )
+        return self.materialization
+
+    @property
+    def cn_object(self):
+        """Local connectivity used instead of fetching edges from CAVE."""
+        # Lazy-load the connectivity object if it is a file path
+        if isinstance(self._cn_object, Path):
+            self.cn_object = pd.read_feather(self._cn_object)
+        return self._cn_object
+
+    @cn_object.setter
+    def cn_object(self, value):
+        """Set the connectivity object."""
+        if value is None:
+            self._cn_object = None
+        elif isinstance(value, pd.DataFrame):
+            # Treat "pre/post_root_{materialization_version}" like "pre/post_root_id"
+            columns = [
+                re.sub(r"^(pre|post)_root_\d+$", r"\1_root_id", c) for c in value.columns
+            ]
+
+            for aliases in CN_COLUMN_ALIASES.values():
+                if sum(columns.count(c) for c in aliases) != 1:
+                    raise ValueError(
+                        f"DataFrame must contain exactly one of the columns: {', '.join(aliases)}"
+                    )
+
+            renames = {
+                a: col for col, aliases in CN_COLUMN_ALIASES.items() for a in aliases
+            }
+            renames["neuropil"] = "roi"
+            self._cn_object = value.set_axis(
+                [renames.get(c, c) for c in columns], axis=1
+            )
+        elif isinstance(value, (str, Path)):
+            self._cn_object = Path(value).expanduser()
+            if not self._cn_object.is_file():
+                raise ValueError(f'"{self._cn_object}" is not a valid file')
+        else:
+            raise ValueError("`cn_object` must be a DataFrame, a file path or None.")
 
     def add_neurons(self, x, regex="auto", sides=None):
         """Add neurons to dataset.
@@ -133,7 +259,7 @@ class CaveDataset(DataSet, ABC):
 
         """
         if not hasattr(self, "_types_dict"):
-            annot = self.get_annotations().set_index("root_id")[self._type_cols].copy()
+            annot = self.get_annotations().set_index("root_id")[list(self._type_cols)].copy()
 
             # Make sure we don't have empty strings
             for col in self._type_cols:
@@ -141,6 +267,10 @@ class CaveDataset(DataSet, ABC):
 
             for col in self._type_cols[1:]:
                 annot[self._type_cols[0]] = annot[self._type_cols[0]].fillna(annot[col])
+
+            # Drop untyped neurons (i.e. those with NaN in the type column(s))
+            annot = annot[annot[self._type_cols[0]].notnull()]
+
             self._types_dict = annot[self._type_cols[0]].to_dict()
 
         if x is None:
@@ -162,7 +292,7 @@ class CaveDataset(DataSet, ABC):
 
         """
         if not hasattr(self, "_sides_dict"):
-            annot = self.get_annotations().set_index("root_id")[self._side_cols].copy()
+            annot = self.get_annotations().set_index("root_id")[list(self._side_cols)].copy()
 
             # Make sure we don't have empty strings
             for col in self._side_cols:
@@ -183,7 +313,7 @@ class CaveDataset(DataSet, ABC):
 
     def clear_cache(self):
         """Clear cached data (e.g. annotations). Does not clear data cached on disk."""
-        for attr in ("_annotations", "_types_dict", "_sides_dict"):
+        for attr in ("_annotations", "_types_dict", "_cn_types_dict", "_sides_dict"):
             if hasattr(self, attr):
                 delattr(self, attr)
 
@@ -203,7 +333,7 @@ class CaveDataset(DataSet, ABC):
         return np.isin(x, list(G.nodes))
 
     # Should this be cached and/or turned into a classmethod?
-    def compile_label_graph(self, which_neurons="all", collapse_neurons=False):
+    def compile_label_graph(self, which_neurons="all", collapse_neurons=False, strict=False):
         """Compile label graph.
 
         Parameters
@@ -213,6 +343,8 @@ class CaveDataset(DataSet, ABC):
         collapse_neurons : bool
                         If True, will collapse neurons with the same connectivity into
                         a single node. Useful for e.g. visualization.
+        strict :        bool
+                        Currently not supported for CAVE datasets and must be False.
 
         Returns
         -------
@@ -224,6 +356,11 @@ class CaveDataset(DataSet, ABC):
             "self",
             "all",
         ), "`which_neurons` must be 'self' or 'all'"
+
+        if strict:
+            raise ValueError(
+                f"`strict=True` is currently not supported for {type(self).__name__}."
+            )
 
         ann = self.get_annotations()
 
@@ -278,7 +415,67 @@ class CaveDataset(DataSet, ABC):
 
         return G
 
-    def compile_adjacency(self, collapse_types=False):
+    def _get_edges(self, source, target, by_roi=False):
+        """Get edges between `source` and `target` IDs (`None` = any neuron).
+
+        Uses the local connectivity (`cn_object`) if provided and otherwise
+        fetches edges from CAVE. Edges are always aggregated to one row per
+        pre-post pair (or per pre-post-roi triplet if `by_roi=True`).
+        """
+        cn = self.cn_object
+        if by_roi and (cn is None or "roi" not in cn.columns):
+            raise ValueError(
+                "Per-neuropil connectivity requires a `cn_object` with a neuropil column."
+            )
+
+        if cn is None:
+            ids = [i for i in (source, target) if i is not None]
+            return _fetch_edges(
+                source=source,
+                target=target,
+                client=self.caveclient,
+                materialization=self._resolve_materialization(np.concatenate(ids)),
+            )
+
+        filt = np.ones(len(cn), dtype=bool)
+        if source is not None:
+            filt &= cn.pre.isin(source).values
+        if target is not None:
+            filt &= cn.post.isin(target).values
+        cols = ["pre", "post", "roi"] if by_roi else ["pre", "post"]
+        return cn[filt].groupby(cols, as_index=False).weight.sum()
+
+    def _apply_types(self, edges):
+        """Replace pre/post IDs in `edges` with their types (and sides)."""
+        # Expanding morphology into connectivity types is expensive -> cache it
+        if not hasattr(self, "_cn_types_dict"):
+            types = self.get_labels(None)
+            self._cn_types_dict = dict(
+                zip(types, _morphology_to_connectivity_types(list(types.values())))
+            )
+        return _add_types(
+            edges,
+            types=self._cn_types_dict,
+            col=("pre", "post"),
+            sides=self.get_sides(None) if self.use_sides else None,
+            sides_rel=self.use_sides == "relative",
+        )
+
+    def copy(self):
+        """Make copy of dataset."""
+        # N.B. `_copy_attrs` must all be constructor arguments. We also pass the
+        # resolved materialization so we don't look up "latest" again.
+        x = type(self)(
+            label=self.label,
+            materialization=self.materialization,
+            **{attr: getattr(self, attr) for attr in self._copy_attrs},
+        )
+        x.neurons = self.neurons.copy()
+        # Bypass the setter: no need to (lazy-)load or re-validate the connectivity
+        x._cn_object = self._cn_object
+        return x
+
+    def compile_adjacency(self, collapse_types=False, collapse_rois=True):
         """Compile adjacency between all neurons in this dataset.
 
         Parameters
@@ -286,7 +483,8 @@ class CaveDataset(DataSet, ABC):
         collapse_types : bool
                         Whether to collapse by type.
         collapse_rois : bool
-                        Whether to collapse across ROIs.
+                        Whether to collapse across neuropils. If False, requires
+                        a `cn_object` with a neuropil column.
 
         Returns
         -------
@@ -298,27 +496,12 @@ class CaveDataset(DataSet, ABC):
         x = np.asarray(self.neurons).astype(np.int64)
 
         # Fetch edges between given IDs
-        edges = _fetch_edges(
-            source=x,
-            target=x,
-            client=self.caveclient,
-            materialization=self.materialization,
-        )
+        edges = self._get_edges(source=x, target=x, by_roi=not collapse_rois)
 
         # For grouping by type simply replace pre and post IDs with their types
         # -> we'll aggregate later
         if self.use_types:
-            types = self.get_labels(None)
-            sides = self.get_sides(None)
-
-            edges = _add_types(
-                edges,
-                types=types,
-                col=("pre", "post"),
-                expand_morphology_types=True,
-                sides=None if not self.use_sides else sides,
-                sides_rel=True if self.use_sides == "relative" else False,
-            )
+            edges = self._apply_types(edges)
 
         self.adj_ = edges
 
@@ -328,12 +511,6 @@ class CaveDataset(DataSet, ABC):
         # Keep track of whether this used types and side
         self.adj_types_used_ = self.use_types
         self.adj_sides_used_ = self.use_sides
-
-        # Translate morphology types into connectivity types
-        # This makes it easier to align with hemibrain
-        # self.connectivity_.columns = _morphology_to_connectivity_types(
-        #    self.connectivity_.columns
-        # )
 
         return self
 
@@ -345,8 +522,8 @@ class CaveDataset(DataSet, ABC):
         collapse_types :    bool
                             Whether to collapse by type.
         drop_unannotated :  bool
-                            If True, will drop edges to/from IDs that aren't
-                            among the annotations.
+                            If True (default), will drop edges to/from partners
+                            that aren't among the annotations.
 
         Returns
         -------
@@ -354,75 +531,37 @@ class CaveDataset(DataSet, ABC):
                         The dataset with compiled edges as `edges_` attribute.
 
         """
+        if not self.upstream and not self.downstream:
+            raise ValueError("`upstream` and `downstream` must not both be False")
+
         # Make sure we're working on integers
         x = np.asarray(self.neurons).astype(np.int64)
 
+        # Pairs of (edges, column with the partner neurons)
+        parts = []
         if self.upstream:
-            us = _fetch_edges(
-                source=None,
-                target=x,
-                client=self.caveclient,
-                materialization=self.materialization,
-            )
-            if drop_unannotated:
-                us = us[us.pre.isin(self.get_annotations().root_id)]
+            parts.append((self._get_edges(source=None, target=x), "pre"))
         if self.downstream:
-            ds = _fetch_edges(
-                source=x,
-                target=None,
-                client=self.caveclient,
-                materialization=self.materialization,
-            )
+            parts.append((self._get_edges(source=x, target=None), "post"))
+
+        if drop_unannotated:
+            annotated = pd.Index(self.get_annotations().root_id.values)
+
+        edges = []
+        for e, partner in parts:
             if drop_unannotated:
-                ds = ds[ds.post.isin(self.get_annotations().root_id)]
+                e = e[e[partner].isin(annotated)]
+            if self.exclude_queries:
+                e = e[~e[partner].isin(x)]
+            # For grouping by type simply replace pre and post IDs with their
+            # types and aggregate (N.B. `_get_edges` already aggregates by ID)
+            if self.use_types:
+                e = self._apply_types(e)
+                e = e.groupby(["pre", "post"], as_index=False).weight.sum()
+            edges.append(e)
 
-        if self.exclude_queries:
-            if self.upstream:
-                us = us[~us.pre.isin(x)]
-            if self.downstream:
-                ds = ds[~ds.post.isin(x)]
-
-        # For grouping by type simply replace pre and post IDs with their types
-        # -> we'll aggregate later
-        # For grouping by type simply replace pre and post IDs with their types
-        # -> we'll aggregate later
-        if self.use_types:
-            types = self.get_labels(None)
-            sides = self.get_sides(None)
-
-            if self.upstream:
-                us = _add_types(
-                    us,
-                    types=types,
-                    col=("pre", "post"),
-                    expand_morphology_types=True,
-                    sides=None if not self.use_sides else sides,
-                    sides_rel=True if self.use_sides == "relative" else False,
-                )
-            if self.downstream:
-                ds = _add_types(
-                    ds,
-                    types=types,
-                    col=("pre", "post"),
-                    expand_morphology_types=True,
-                    sides=None if not self.use_sides else sides,
-                    sides_rel=True if self.use_sides == "relative" else False,
-                )
-
-        if self.upstream and self.downstream:
-            self.edges_ = pd.concat(
-                (
-                    us.groupby(["pre", "post"], as_index=False).weight.sum(),
-                    ds.groupby(["pre", "post"], as_index=False).weight.sum(),
-                ),
-                axis=0,
-            ).drop_duplicates()
-        elif self.upstream:
-            self.edges_ = us.groupby(["pre", "post"], as_index=False).weight.sum()
-        elif self.downstream:
-            self.edges_ = ds.groupby(["pre", "post"], as_index=False).weight.sum()
-        else:
-            raise ValueError("`upstream` and `downstream` must not both be False")
+        # N.B. edges between query neurons show up both up- and downstream
+        self.edges_ = pd.concat(edges, axis=0).drop_duplicates()
 
         if collapse_types:
             self.edges_ = self.edges_.groupby(
@@ -437,40 +576,23 @@ class CaveDataset(DataSet, ABC):
 
 
 def _fetch_synapses(source, target, client, materialization):
-    """Helper function to fetch connectivity via the CAVE client."""
+    """Helper function to fetch connectivity via the CAVE client.
+
+    `materialization` must already be resolved (i.e. an integer or "live"),
+    see `CaveDataset._resolve_materialization`.
+    """
+    assert materialization == "live" or _is_int(materialization)
 
     # Make sure we're working on integers
-    all_ids = np.array([], dtype=np.int64)
     if source is not None:
         source = np.asarray(source).astype(np.int64)
-        all_ids = np.concat((all_ids, source))
     if target is not None:
         target = np.asarray(target).astype(np.int64)
-        all_ids = np.concat((all_ids, target))
-    all_ids = np.unique(all_ids)
-
-    if materialization == "auto":
-        materialization = flywire.utils.find_mat_version(
-            all_ids, dataset=client.datastack_name
-        )
-    elif materialization == "latest":
-        materialization = max(client.materialization.get_versions())
-    else:
-        timestamp = None if materialization == "live" else f"mat_{materialization}"
-
-        il = flywire.is_latest_root(
-            all_ids, timestamp=timestamp, dataset=client.datastack_name
-        )
-        if any(~il):
-            raise ValueError(
-                "Some of the root IDs does not exist for the specified "
-                f"materialization ({materialization}): {all_ids[~il]}"
-            )
 
     # Grab connectivity from CAVE
     if materialization != "live":
         syn = client.materialize.synapse_query(
-            pre_ids=source, post_ids=target, materialization=materialization
+            pre_ids=source, post_ids=target, materialization_version=materialization
         )
     else:
         filter_in_dict = {}
